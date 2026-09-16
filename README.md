@@ -57,6 +57,29 @@ Local endpoints:
 
 Service providers can be created through Swagger UI or the Angular frontend.
 
+## Demo data
+
+To populate an empty local database with 12 fictional service providers,
+configure your `.env` file, then run:
+
+```bash
+npm run build
+npm run migration:run:prod
+npm run seed:demo
+```
+
+The seed uses the database configured by `DATABASE_PATH`.
+It validates all demo profiles before inserting them.
+
+If any service provider already exists, insertion is skipped.
+Existing data is never deleted or replaced.
+
+The dataset includes different professions, cities, hourly rates and
+availability values. With the default page size of 10, it provides
+two pages of results.
+
+This command is intended for local development and demonstrations.
+
 ## Frontend integration
 
 The Angular frontend is maintained in the separate `entraide-web` project.
