@@ -59,7 +59,8 @@ Service providers can be created through Swagger UI or the Angular frontend.
 
 ## Demo data
 
-To populate an empty local database with 12 fictional service providers,
+To populate an empty local database with 12 fictional service providers
+and 7 fictional reviews,
 configure your `.env` file, then run:
 
 ```bash
@@ -69,7 +70,8 @@ npm run seed:demo
 ```
 
 The seed uses the database configured by `DATABASE_PATH`.
-It validates all demo profiles before inserting them.
+It validates all demo profiles and reviews before inserting them in a
+single database transaction.
 
 If any service provider already exists, insertion is skipped.
 Existing data is never deleted or replaced.
@@ -77,6 +79,10 @@ Existing data is never deleted or replaced.
 The dataset includes different professions, cities, hourly rates and
 availability values. With the default page size of 10, it provides
 two pages of results.
+
+The reviews are linked to six provider profiles. Sophie Martin has two
+reviews, which makes it possible to demonstrate the review count and
+average rating immediately in the Angular application.
 
 This command is intended for local development and demonstrations.
 
