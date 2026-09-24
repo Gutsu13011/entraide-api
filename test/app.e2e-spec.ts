@@ -5,6 +5,7 @@ import { AppModule } from './../src/app.module.js';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import type { Repository } from 'typeorm';
 import { ServiceProvider } from './../src/service-providers/service-provider.entity.js';
+import { ServicePricingType } from '../src/service-offerings/service-pricing-type.enum.js';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
@@ -516,6 +517,116 @@ describe('AppController (e2e)', () => {
               responseTime: expect.any(Number),
             },
           },
+        });
+      });
+  });
+
+  it('/service-providers/1/service-offerings (POST)', () => {
+    const createServiceOfferingMock = {
+      title: 'title',
+      description: 'description',
+      pricingType: ServicePricingType.HOURLY,
+      hourlyRate: 20,
+    };
+
+    return request(app.getHttpServer())
+      .post('/service-providers/1/service-offerings')
+      .send(createServiceOfferingMock)
+      .expect(201)
+      .expect((response) => {
+        expect(response.body).toMatchObject({
+          id: 1,
+          ...createServiceOfferingMock,
+          serviceProviderId: 1,
+        });
+      });
+  });
+
+  it('/service-providers/1/service-offerings (GET)', async () => {
+    const createServiceOffering1 = {
+      title: 'title1',
+      description: 'description1',
+      pricingType: ServicePricingType.HOURLY,
+      hourlyRate: 20,
+    };
+    const createServiceOffering2 = {
+      title: 'title2',
+      description: 'description2',
+      pricingType: ServicePricingType.FREE,
+    };
+
+    await request(app.getHttpServer())
+      .post('/service-providers/1/service-offerings')
+      .send(createServiceOffering1)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post('/service-providers/1/service-offerings')
+      .send(createServiceOffering2)
+      .expect(201);
+
+    return request(app.getHttpServer())
+      .get('/service-providers/1/service-offerings')
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toHaveLength(2);
+        expect(response.body[0]).toMatchObject({
+          id: 1,
+          ...createServiceOffering1,
+          serviceProviderId: 1,
+        });
+        expect(response.body[1]).toMatchObject({
+          id: 2,
+          ...createServiceOffering2,
+          hourlyRate: null,
+          serviceProviderId: 1,
+        });
+      });
+  });
+
+  it('/service-providers/1/service-offerings (POST) should return 400 no hourlyRate', () => {
+    const createServiceOfferingMock = {
+      title: 'title',
+      description: 'description',
+      pricingType: ServicePricingType.HOURLY,
+    };
+
+    return request(app.getHttpServer())
+      .post('/service-providers/1/service-offerings')
+      .send(createServiceOfferingMock)
+      .expect(400)
+      .expect((response) => {
+        expect(response.body.message).toContain('hourlyRate should not be null or undefined');
+      });
+  });
+
+  it('/service-providers/1/service-offerings (POST) should return 400', () => {
+    const createServiceOfferingMock = {
+      title: 'title',
+      description: 'description',
+      pricingType: ServicePricingType.FREE,
+      hourlyRate: 20,
+    };
+
+    return request(app.getHttpServer())
+      .post('/service-providers/1/service-offerings')
+      .send(createServiceOfferingMock)
+      .expect(400)
+      .expect((response) => {
+        expect(response.body.message).toContain(
+          'A free service offering cannot have an hourly rate',
+        );
+      });
+  });
+
+  it('/service-providers/999/service-offerings (GET) should return 404', () => {
+    return request(app.getHttpServer())
+      .get('/service-providers/999/service-offerings')
+      .expect(404)
+      .expect((response) => {
+        expect(response.body).toMatchObject({
+          message: 'Service provider with id 999 not found',
+          error: 'Not Found',
+          statusCode: 404,
         });
       });
   });

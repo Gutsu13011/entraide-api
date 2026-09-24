@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, Index, OneToMany, type Relation } from 'typeorm';
 import { Review } from '../reviews/review.entity.js';
+import { ServiceOffering } from '../service-offerings/service-offering.entity.js';
 
 @Entity('service_providers')
 export class ServiceProvider {
@@ -25,4 +26,6 @@ export class ServiceProvider {
 
   @OneToMany(() => Review, (review) => review.serviceProvider)
   reviews: Relation<Review[]>;
+  @OneToMany(() => ServiceOffering, (serviceOffering) => serviceOffering.serviceProvider)
+  serviceOfferings: Relation<ServiceOffering[]>;
 }

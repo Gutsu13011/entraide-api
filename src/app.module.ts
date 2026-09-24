@@ -12,11 +12,14 @@ import { HealthModule } from './health/health.module.js';
 import { InitialSchema1789026143459 } from './database/migrations/1789026143459-InitialSchema.js';
 import { AddCityIndex1789287684113 } from './database/migrations/1789287684113-AddCityIndex.js';
 import { CreateReviewsTable1789293137887 } from './database/migrations/1789293137887-CreateReviewsTable.js';
+import { ServiceOfferingsModule } from './service-offerings/service-offerings.module.js';
+import { CreateServiceOfferingsTable1790070822998 } from './database/migrations/1790070822998-CreateServiceOfferingsTable.js';
 
 const testMigrations = [
   InitialSchema1789026143459,
   AddCityIndex1789287684113,
   CreateReviewsTable1789293137887,
+  CreateServiceOfferingsTable1790070822998,
 ];
 @Module({
   imports: [
@@ -46,6 +49,7 @@ const testMigrations = [
     ServiceProvidersModule,
     ReviewsModule,
     HealthModule,
+    ServiceOfferingsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_INTERCEPTOR, useClass: RequestLoggingInterceptor }],

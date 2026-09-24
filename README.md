@@ -15,6 +15,7 @@ service.
 - Service provider management
 - Pagination, search, filtering and sorting
 - Provider reviews
+- Multiple service offerings per provider, with free or hourly pricing
 - SQLite persistence with TypeORM migrations
 - Request validation and interactive Swagger documentation
 - Health checks and request logging
@@ -55,13 +56,17 @@ Local endpoints:
 - Swagger UI: http://localhost:3000/api
 - Health check: http://localhost:3000/health
 
+Service offering endpoints:
+
+- `GET /service-providers/:serviceProviderId/service-offerings` lists a provider's offerings.
+- `POST /service-providers/:serviceProviderId/service-offerings` creates an offering.
+
 Service providers can be created through Swagger UI or the Angular frontend.
 
 ## Demo data
 
-To populate an empty local database with 12 fictional service providers
-and 7 fictional reviews,
-configure your `.env` file, then run:
+To populate an empty local database with 12 fictional service providers,
+7 reviews and 14 service offerings, configure your `.env` file, then run:
 
 ```bash
 npm run build
@@ -69,20 +74,28 @@ npm run migration:run:prod
 npm run seed:demo
 ```
 
-The seed uses the database configured by `DATABASE_PATH`.
-It validates all demo profiles and reviews before inserting them in a
-single database transaction.
+The seed uses the database configured by `DATABASE_PATH`. It validates
+the demo profiles, reviews and offerings, then inserts them in a single
+database transaction.
 
-If any service provider already exists, insertion is skipped.
-Existing data is never deleted or replaced.
+If any service provider already exists, the seed is skipped. Existing
+data is never deleted or replaced.
 
 The dataset includes different professions, cities, hourly rates and
-availability values. With the default page size of 10, it provides
-two pages of results.
+availability values. With the default page size of 10, it provides two
+pages of providers.
 
 The reviews are linked to six provider profiles. Sophie Martin has two
-reviews, which makes it possible to demonstrate the review count and
-average rating immediately in the Angular application.
+reviews, demonstrating the review count and average rating.
+
+Each provider has an hourly offering. Sophie Martin and Hugo Petit each
+have an additional free offering, demonstrating that one provider can
+offer services with independent pricing.
+
+When migrating a database that already contains providers, the migration
+creates one hourly offering for each existing provider using its
+profession, description and hourly rate. The seed does not add its demo
+offerings to a database that already contains providers.
 
 This command is intended for local development and demonstrations.
 
@@ -142,6 +155,5 @@ migrations, unit tests and end-to-end tests.
 ## Planned improvements
 
 - Authentication and user accounts
-- Multiple services per provider, with free or hourly paid offerings
 - Service requests and status tracking
 - Reviews linked to completed service requests
