@@ -23,6 +23,7 @@ async function bootstrap() {
     .setTitle('Entraide API')
     .setDescription('API for managing service providers')
     .setVersion('1.0')
+    .addBearerAuth()
     .build();
 
   const documentFactory = () => SwaggerModule.createDocument(app, swaggerConfig);

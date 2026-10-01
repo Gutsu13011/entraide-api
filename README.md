@@ -21,11 +21,13 @@ service.
 - Health checks and request logging
 - Unit and end-to-end tests
 - GitHub Actions workflow for automated checks
+- Authentication and user accounts
 
 ## Project status
 
 The application is under active development.
-Authentication, user accounts and service request workflows are planned.
+User registration, login and a protected profile endpoint are available.
+Service requests and ownership-based authorization are planned.
 The current version is intended for local development and demonstration.
 
 ## Requirements
@@ -40,11 +42,18 @@ Run these commands from the project directory:
 ```bash
 npm ci
 cp .env.example .env
+```
+
+Generate a secret with `openssl rand -base64 32` and paste its output after
+`JWT_SECRET=` in `.env`. Do this before starting the API. Never commit `.env`.
+
+```bash
 npm run migration:run
 npm run start:dev
 ```
 
-For an existing installation, keep your current `.env` file.
+For an existing installation, keep your current `.env` file and ensure
+`JWT_SECRET` is set.
 
 The default configuration uses port `3000` and a local SQLite database
 named `entraide.sqlite`. Migrations create the database schema.
@@ -62,6 +71,13 @@ Service offering endpoints:
 - `POST /service-providers/:serviceProviderId/service-offerings` creates an offering.
 
 Service providers can be created through Swagger UI or the Angular frontend.
+
+## Authentication
+
+- `POST /auth/register` creates a user.
+- `POST /auth/login` returns an `accessToken`.
+- `GET /auth/me` returns the authenticated user's public profile. Send
+  `Authorization: Bearer <accessToken>`.
 
 ## Demo data
 
@@ -114,7 +130,11 @@ Configure the environment variables before starting the application:
 NODE_ENV=production
 PORT=3000
 DATABASE_PATH=entraide.sqlite
+JWT_SECRET=
 ```
+
+Set `JWT_SECRET` to a new random value for this deployment before starting
+the application. The API will not start with an empty value.
 
 Then install, build, migrate, and start the application in this order:
 
@@ -154,6 +174,5 @@ migrations, unit tests and end-to-end tests.
 
 ## Planned improvements
 
-- Authentication and user accounts
 - Service requests and status tracking
 - Reviews linked to completed service requests

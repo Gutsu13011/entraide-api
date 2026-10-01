@@ -8,6 +8,7 @@ export default defineConfig({
     include: ['**/*.e2e-spec.ts'],
     env: {
       NODE_ENV: 'test',
+      JWT_SECRET: 'vrpgl/SPVA7q8R2GwLLYoX1EuuDVZwK/2YwAclv0Iis=',
     },
   },
 });

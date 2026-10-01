@@ -25,7 +25,7 @@ export class ServiceProvider {
   imageUrl: string;
 
   @OneToMany(() => Review, (review) => review.serviceProvider)
-  reviews: Relation<Review[]>;
+  reviews?: Relation<Review[]>;
   @OneToMany(() => ServiceOffering, (serviceOffering) => serviceOffering.serviceProvider)
-  serviceOfferings: Relation<ServiceOffering[]>;
+  serviceOfferings?: Relation<ServiceOffering[]>;
 }

@@ -14,12 +14,17 @@ import { AddCityIndex1789287684113 } from './database/migrations/1789287684113-A
 import { CreateReviewsTable1789293137887 } from './database/migrations/1789293137887-CreateReviewsTable.js';
 import { ServiceOfferingsModule } from './service-offerings/service-offerings.module.js';
 import { CreateServiceOfferingsTable1790070822998 } from './database/migrations/1790070822998-CreateServiceOfferingsTable.js';
+import { UsersModule } from './users/users.module.js';
+import { CreateUsersTable1790601439138 } from './database/migrations/1790601439138-CreateUsersTable.js';
+import { AuthModule } from './auth/auth.module.js';
+import { JwtService } from '@nestjs/jwt';
 
 const testMigrations = [
   InitialSchema1789026143459,
   AddCityIndex1789287684113,
   CreateReviewsTable1789293137887,
   CreateServiceOfferingsTable1790070822998,
+  CreateUsersTable1790601439138,
 ];
 @Module({
   imports: [
@@ -29,6 +34,7 @@ const testMigrations = [
         PORT: Joi.number().port().default(3000),
         DATABASE_PATH: Joi.string().min(1).default('entraide.sqlite'),
         NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
+        JWT_SECRET: Joi.string().min(32).required(),
       }),
     }),
     TypeOrmModule.forRootAsync({
@@ -50,8 +56,14 @@ const testMigrations = [
     ReviewsModule,
     HealthModule,
     ServiceOfferingsModule,
+    UsersModule,
+    AuthModule,
   ],
   controllers: [AppController],
-  providers: [AppService, { provide: APP_INTERCEPTOR, useClass: RequestLoggingInterceptor }],
+  providers: [
+    AppService,
+    { provide: APP_INTERCEPTOR, useClass: RequestLoggingInterceptor },
+    JwtService,
+  ],
 })
 export class AppModule {}

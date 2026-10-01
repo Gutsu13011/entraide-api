@@ -1,11 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication, UnauthorizedException, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from './../src/app.module.js';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import type { Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { ServiceProvider } from './../src/service-providers/service-provider.entity.js';
 import { ServicePricingType } from '../src/service-offerings/service-pricing-type.enum.js';
+import { User } from '../src/users/user.entity.js';
+import { UsersService } from '../src/users/users.service.js';
+import argon2 from 'argon2';
+import { JwtService } from '@nestjs/jwt';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
@@ -24,6 +28,7 @@ describe('AppController (e2e)', () => {
       }),
     );
     await app.init();
+
     const serviceProvidersRepository = app.get<Repository<ServiceProvider>>(
       getRepositoryToken(ServiceProvider),
     );
@@ -627,6 +632,175 @@ describe('AppController (e2e)', () => {
           message: 'Service provider with id 999 not found',
           error: 'Not Found',
           statusCode: 404,
+        });
+      });
+  });
+
+  it('/auth/register (POST) creates a user', async () => {
+    const authRegisterMock = {
+      firstName: 'first',
+      lastName: 'last',
+      email: 'FIRSTNAME@EXAMPLE.COM',
+      password: 'jesuisunmotdepassede15caractères',
+    };
+
+    await request(app.getHttpServer()).post('/auth/register').send(authRegisterMock).expect(201);
+
+    const usersRepository = app.get<Repository<User>>(getRepositoryToken(User));
+    const savedUser = await usersRepository.findOneBy({ email: 'firstname@example.com' });
+
+    expect(savedUser).toMatchObject({
+      firstName: 'first',
+      lastName: 'last',
+      email: 'firstname@example.com',
+    });
+  });
+
+  it('/auth/register (POST) rejects a short password', async () => {
+    const authRegisterMock = {
+      firstName: 'first',
+      lastName: 'last',
+      email: 'FIRSTNAME2@EXAMPLE.COM',
+      password: 'short',
+    };
+
+    await request(app.getHttpServer()).post('/auth/register').send(authRegisterMock).expect(400);
+
+    const userRepository = app.get<Repository<User>>(getRepositoryToken(User));
+    const savedUser = await userRepository.findOneBy({ email: 'firstname2@example.com' });
+
+    expect(savedUser).toBeNull();
+  });
+
+  it('/auth/register (POST) rejects a user already created', async () => {
+    const authRegisterMock = {
+      firstName: 'first',
+      lastName: 'last',
+      email: 'FIRSTNAME3@EXAMPLE.COM',
+      password: 'jesuisunmotdepassede15caractères',
+    };
+
+    await request(app.getHttpServer()).post('/auth/register').send(authRegisterMock).expect(201);
+    await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({ ...authRegisterMock, email: 'firstname3@example.com' })
+      .expect(409);
+
+    const userRepository = app.get<Repository<User>>(getRepositoryToken(User));
+    const savedUserCount = await userRepository.countBy({ email: 'firstname3@example.com' });
+
+    expect(savedUserCount).toBe(1);
+  });
+
+  it('/auth/register (POST) create and get a new user', async () => {
+    const authRegisterMock = {
+      firstName: 'Alice',
+      lastName: 'Martin',
+      email: 'alicemartin@example.com',
+      password: 'jesuisunmotdepassede15caractères',
+    };
+
+    await request(app.getHttpServer()).post('/auth/register').send(authRegisterMock).expect(201);
+
+    const userSaved = await app
+      .get<UsersService>(UsersService)
+      .findByEmailWithPassword('   ALICEMARTIN@EXaMPLE.COM   ');
+
+    expect(userSaved?.email).toBe('alicemartin@example.com');
+
+    if (userSaved === null) throw new UnauthorizedException('Registered user not found');
+
+    const passwordMatches = await argon2.verify(userSaved.passwordHash, authRegisterMock.password);
+
+    expect(passwordMatches).toBe(true);
+  });
+
+  it('/auth/login (POST) returns a signed access token for valid credentials', async () => {
+    const authRegisterMock = {
+      firstName: 'Alice',
+      lastName: 'Martin',
+      email: 'ALIcemartin@example.com',
+      password: 'jesuisunmotdepassede15caractères',
+    };
+
+    await request(app.getHttpServer()).post('/auth/register').send(authRegisterMock).expect(201);
+    const response = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: 'alicemartin@example.com', password: authRegisterMock.password })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toEqual({ accessToken: expect.any(String) });
+      });
+
+    const jwtService = app.get(JwtService);
+    const payload = await jwtService.verifyAsync<{ sub: string }>(response.body.accessToken);
+
+    expect(payload.sub).toBe('1');
+  });
+
+  it('/auth/login (POST) rejects an incorrect password', async () => {
+    const authRegisterMock = {
+      firstName: 'Alice',
+      lastName: 'Martin',
+      email: 'ALIcemartin@example.com',
+      password: 'jesuisunmotdepassede15caractères',
+    };
+
+    await request(app.getHttpServer()).post('/auth/register').send(authRegisterMock).expect(201);
+    await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: 'alicemartin@example.com', password: 'wrongpassword123445678ç!èè' })
+      .expect(401)
+      .expect((response) => {
+        expect(response.body.message).toBe('Invalid credentials');
+      });
+  });
+
+  it('/auth/login (POST) rejects an incorrect email', async () => {
+    const authRegisterMock = {
+      firstName: 'Alice',
+      lastName: 'Martin',
+      email: 'ALIcemartin@example.com',
+      password: 'jesuisunmotdepassede15caractères',
+    };
+
+    await request(app.getHttpServer()).post('/auth/register').send(authRegisterMock).expect(201);
+    await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: 'alicemartin@example.co', password: authRegisterMock.password })
+      .expect(401)
+      .expect((response) => {
+        expect(response.body.message).toBe('Invalid credentials');
+      });
+  });
+
+  it('/auth/me (GET) should reject GET /auth/me without a bearer token', async () => {
+    await request(app.getHttpServer()).get('/auth/me').expect(401);
+  });
+
+  it('/auth/me (GET) should return the public profile from GET /auth/me with a valid token', async () => {
+    const authRegisterMock = {
+      firstName: 'Alice',
+      lastName: 'Martin',
+      email: 'ALIcemartin@example.com',
+      password: 'jesuisunmotdepassede15caractères',
+    };
+
+    await request(app.getHttpServer()).post('/auth/register').send(authRegisterMock).expect(201);
+    const loginResponse = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: authRegisterMock.email, password: authRegisterMock.password })
+      .expect(200);
+    await request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Authorization', `Bearer ${loginResponse.body.accessToken}`)
+      .expect(200)
+      .expect((meReponse) => {
+        expect(meReponse.body).toEqual({
+          id: 1,
+          firstName: authRegisterMock.firstName,
+          lastName: authRegisterMock.lastName,
+          email: 'alicemartin@example.com',
         });
       });
   });
