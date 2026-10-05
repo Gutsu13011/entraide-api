@@ -4,6 +4,7 @@ import { ReviewsService } from './reviews.service.js';
 import { Review } from './review.entity.js';
 import type { CreateReviewDto } from './dto/create-review.dto.js';
 import type { ReviewSummaryDto } from './dto/review-summary.dto.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 
 describe('ReviewsController', () => {
   let controller: ReviewsController;
@@ -18,7 +19,10 @@ describe('ReviewsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ReviewsController],
       providers: [{ provide: ReviewsService, useValue: reviewsServiceMock }],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<ReviewsController>(ReviewsController);
   });

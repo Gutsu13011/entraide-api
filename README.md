@@ -70,14 +70,30 @@ Service offering endpoints:
 - `GET /service-providers/:serviceProviderId/service-offerings` lists a provider's offerings.
 - `POST /service-providers/:serviceProviderId/service-offerings` creates an offering.
 
-Service providers can be created through Swagger UI or the Angular frontend.
+Service providers can be created through Swagger UI with a valid access token.
+Frontend integration for authenticated write requests is the next step.
 
 ## Authentication
 
 - `POST /auth/register` creates a user.
 - `POST /auth/login` returns an `accessToken`.
-- `GET /auth/me` returns the authenticated user's public profile. Send
-  `Authorization: Bearer <accessToken>`.
+- `GET /auth/me` returns the authenticated user's public profile.
+
+Send `Authorization: Bearer <accessToken>` when calling protected endpoints.
+In Swagger UI, use the **Authorize** button with the token returned by login.
+
+The following operations require a valid access token:
+
+- `POST /service-providers`
+- `PATCH /service-providers/:id`
+- `DELETE /service-providers/:id`
+- `POST /service-providers/:serviceProviderId/service-offerings`
+- `POST /service-providers/:serviceProviderId/reviews`
+
+Provider, offering and review consultation endpoints remain public.
+
+Authentication identifies the caller. Ownership-based authorization is
+not implemented yet: these operations currently accept any authenticated user.
 
 ## Demo data
 

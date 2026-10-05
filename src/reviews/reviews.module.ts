@@ -4,9 +4,10 @@ import { Review } from './review.entity.js';
 import { ReviewsService } from './reviews.service.js';
 import { ServiceProvidersModule } from '../service-providers/service-providers.module.js';
 import { ReviewsController } from './reviews.controller.js';
+import { AuthModule } from '../auth/auth.module.js';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Review]), ServiceProvidersModule],
+  imports: [TypeOrmModule.forFeature([Review]), ServiceProvidersModule, AuthModule],
   providers: [ReviewsService],
   controllers: [ReviewsController],
 })

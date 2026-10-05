@@ -14,6 +14,23 @@ import { JwtService } from '@nestjs/jwt';
 describe('AppController (e2e)', () => {
   let app: INestApplication;
 
+  async function getAccessToken(): Promise<string> {
+    const validUser = {
+      firstName: 'Alice',
+      lastName: 'Martin',
+      email: 'alicemartin@mail.com',
+      password: 'unmotdepassedaumoins15caracteres',
+    };
+
+    await request(app.getHttpServer()).post('/auth/register').send(validUser).expect(201);
+    const loginResponse = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: validUser.email, password: validUser.password })
+      .expect(200);
+
+    return loginResponse.body.accessToken;
+  }
+
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -268,7 +285,7 @@ describe('AppController (e2e)', () => {
     });
   });
 
-  it('/service-providers (POST)', () => {
+  it('/service-providers (POST)', async () => {
     const createServiceProviderDto = {
       firstName: 'Julie',
       lastName: 'Durand',
@@ -279,9 +296,11 @@ describe('AppController (e2e)', () => {
       available: true,
       imageUrl: '',
     };
+    const accessToken = await getAccessToken();
 
     return request(app.getHttpServer())
       .post('/service-providers')
+      .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceProviderDto)
       .expect(201)
       .expect((response) => {
@@ -292,9 +311,12 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers (POST) should return 400 for an invalid body', () => {
+  it('/service-providers (POST) should return 400 for an invalid body', async () => {
+    const accessToken = await getAccessToken();
+
     return request(app.getHttpServer())
       .post('/service-providers')
+      .set('Authorization', `Bearer ${accessToken}`)
       .send({
         firstName: '',
         lastName: 'Durand',
@@ -315,14 +337,16 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers/1 (PATCH)', () => {
+  it('/service-providers/1 (PATCH)', async () => {
     const updateServiceProviderDto = {
       city: 'Nice',
       available: false,
     };
+    const accessToken = await getAccessToken();
 
     return request(app.getHttpServer())
       .patch('/service-providers/1')
+      .set('Authorization', `Bearer ${accessToken}`)
       .send(updateServiceProviderDto)
       .expect(200)
       .expect((response) => {
@@ -336,8 +360,10 @@ describe('AppController (e2e)', () => {
   });
 
   it('/service-providers/1 (DELETE)', async () => {
+    const accessToken = await getAccessToken();
     const deleteResponse = await request(app.getHttpServer())
       .delete('/service-providers/1')
+      .set('Authorization', `Bearer ${accessToken}`)
       .expect(204);
 
     expect(deleteResponse.text).toBe('');
@@ -345,7 +371,7 @@ describe('AppController (e2e)', () => {
     await request(app.getHttpServer()).get('/service-providers/1').expect(404);
   });
 
-  it('/service-providers (POST) should return 400 property id should not exist', () => {
+  it('/service-providers (POST) should return 400 property id should not exist', async () => {
     const createServiceProviderDto = {
       id: 99,
       firstName: 'Julie',
@@ -357,9 +383,11 @@ describe('AppController (e2e)', () => {
       available: true,
       imageUrl: '',
     };
+    const accessToken = await getAccessToken();
 
     return request(app.getHttpServer())
       .post('/service-providers')
+      .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceProviderDto)
       .expect(400)
       .expect((response) => {
@@ -371,16 +399,18 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers/1/reviews (POST)', () => {
+  it('/service-providers/1/reviews (POST)', async () => {
     const createReviewDto = {
       authorName: 'Alice Martin',
       rating: 5,
       comment: 'Excellent service',
     };
+    const accessToken = await getAccessToken();
 
     return request(app.getHttpServer())
       .post('/service-providers/1/reviews')
       .send(createReviewDto)
+      .set('Authorization', `Bearer ${accessToken}`)
       .expect(201)
       .expect((response) => {
         expect(response.body).toMatchObject({
@@ -398,10 +428,12 @@ describe('AppController (e2e)', () => {
       rating: 5,
       comment: 'Excellent service',
     };
+    const accessToken = await getAccessToken();
 
     await request(app.getHttpServer())
       .post('/service-providers/1/reviews')
       .send(createReviewDto)
+      .set('Authorization', `Bearer ${accessToken}`)
       .expect(201);
 
     return request(app.getHttpServer())
@@ -418,7 +450,9 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers/1/reviews (POST) should return 400 for an invalid rating', () => {
+  it('/service-providers/1/reviews (POST) should return 400 for an invalid rating', async () => {
+    const accessToken = await getAccessToken();
+
     return request(app.getHttpServer())
       .post('/service-providers/1/reviews')
       .send({
@@ -426,6 +460,7 @@ describe('AppController (e2e)', () => {
         rating: 6,
         comment: 'Excellent service',
       })
+      .set('Authorization', `Bearer ${accessToken}`)
       .expect(400)
       .expect((response) => {
         expect(response.body).toMatchObject({
@@ -436,9 +471,12 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers/999/reviews (POST) should return 404', () => {
+  it('/service-providers/999/reviews (POST) should return 404', async () => {
+    const accessToken = await getAccessToken();
+
     return request(app.getHttpServer())
       .post('/service-providers/999/reviews')
+      .set('Authorization', `Bearer ${accessToken}`)
       .send({
         authorName: 'Alice Martin',
         rating: 5,
@@ -482,9 +520,12 @@ describe('AppController (e2e)', () => {
   });
 
   it('/service-providers/1/reviews/summary (GET) should return a rounded average', async () => {
+    const accessToken = await getAccessToken();
+
     for (const rating of [5, 4, 2]) {
       await request(app.getHttpServer())
         .post('/service-providers/1/reviews')
+        .set('Authorization', `Bearer ${accessToken}`)
         .send({
           authorName: 'Test Author',
           rating,
@@ -526,16 +567,18 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers/1/service-offerings (POST)', () => {
+  it('/service-providers/1/service-offerings (POST)', async () => {
     const createServiceOfferingMock = {
       title: 'title',
       description: 'description',
       pricingType: ServicePricingType.HOURLY,
       hourlyRate: 20,
     };
+    const accessToken = await getAccessToken();
 
     return request(app.getHttpServer())
       .post('/service-providers/1/service-offerings')
+      .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceOfferingMock)
       .expect(201)
       .expect((response) => {
@@ -559,13 +602,16 @@ describe('AppController (e2e)', () => {
       description: 'description2',
       pricingType: ServicePricingType.FREE,
     };
+    const accessToken = await getAccessToken();
 
     await request(app.getHttpServer())
       .post('/service-providers/1/service-offerings')
+      .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceOffering1)
       .expect(201);
     await request(app.getHttpServer())
       .post('/service-providers/1/service-offerings')
+      .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceOffering2)
       .expect(201);
 
@@ -588,15 +634,17 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers/1/service-offerings (POST) should return 400 no hourlyRate', () => {
+  it('/service-providers/1/service-offerings (POST) should return 400 no hourlyRate', async () => {
     const createServiceOfferingMock = {
       title: 'title',
       description: 'description',
       pricingType: ServicePricingType.HOURLY,
     };
+    const accessToken = await getAccessToken();
 
     return request(app.getHttpServer())
       .post('/service-providers/1/service-offerings')
+      .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceOfferingMock)
       .expect(400)
       .expect((response) => {
@@ -604,16 +652,18 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers/1/service-offerings (POST) should return 400', () => {
+  it('/service-providers/1/service-offerings (POST) should return 400', async () => {
     const createServiceOfferingMock = {
       title: 'title',
       description: 'description',
       pricingType: ServicePricingType.FREE,
       hourlyRate: 20,
     };
+    const accessToken = await getAccessToken();
 
     return request(app.getHttpServer())
       .post('/service-providers/1/service-offerings')
+      .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceOfferingMock)
       .expect(400)
       .expect((response) => {
@@ -774,11 +824,11 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/auth/me (GET) should reject GET /auth/me without a bearer token', async () => {
+  it('/auth/me (GET) should reject requests without a bearer token', async () => {
     await request(app.getHttpServer()).get('/auth/me').expect(401);
   });
 
-  it('/auth/me (GET) should return the public profile from GET /auth/me with a valid token', async () => {
+  it('/auth/me (GET) should return the public profile with a valid token', async () => {
     const authRegisterMock = {
       firstName: 'Alice',
       lastName: 'Martin',
@@ -802,6 +852,71 @@ describe('AppController (e2e)', () => {
           lastName: authRegisterMock.lastName,
           email: 'alicemartin@example.com',
         });
+      });
+  });
+
+  it('/service-providers (POST) should reject requests without a bearer token', async () => {
+    const createServiceProviderDto = {
+      firstName: 'Julie',
+      lastName: 'Durand',
+      profession: 'Peintre',
+      city: 'Marseille',
+      description: 'Peinture intérieure et extérieure',
+      hourlyRate: 35,
+      available: true,
+      imageUrl: '',
+    };
+
+    await request(app.getHttpServer())
+      .post('/service-providers')
+      .send(createServiceProviderDto)
+      .expect(401);
+  });
+
+  it('/service-providers/1/service-offerings (POST) should reject requests without a bearer token', async () => {
+    const createServiceOffering = {
+      title: 'title1',
+      description: 'description1',
+      pricingType: ServicePricingType.HOURLY,
+      hourlyRate: 20,
+    };
+
+    await request(app.getHttpServer())
+      .post('/service-providers/1/service-offerings')
+      .send(createServiceOffering)
+      .expect(401);
+  });
+
+  it('/service-providers/1 (PATCH) should reject requests without a bearer token', async () => {
+    await request(app.getHttpServer())
+      .patch('/service-providers/1')
+      .send({ city: 'Nice' })
+      .expect(401);
+    await request(app.getHttpServer())
+      .get('/service-providers/1')
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.city).toBe('Paris');
+      });
+  });
+
+  it('/service-providers/1 (DELETE) should reject requests without a bearer token', async () => {
+    await request(app.getHttpServer()).delete('/service-providers/1').expect(401);
+    await request(app.getHttpServer()).get('/service-providers/1').expect(200);
+  });
+
+  it('/service-providers/1/reviews (POST) should reject requests without a bearer token', async () => {
+    const review = { authorName: 'Test Author', rating: 5, comment: 'Test review' };
+
+    await request(app.getHttpServer())
+      .post('/service-providers/1/reviews')
+      .send(review)
+      .expect(401);
+    await request(app.getHttpServer())
+      .get('/service-providers/1/reviews')
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toHaveLength(0);
       });
   });
 

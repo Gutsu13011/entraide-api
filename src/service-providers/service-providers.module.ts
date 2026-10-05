@@ -3,9 +3,10 @@ import { ServiceProvidersController } from './service-providers.controller.js';
 import { ServiceProvidersService } from './service-providers.service.js';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ServiceProvider } from './service-provider.entity.js';
+import { AuthModule } from '../auth/auth.module.js';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([ServiceProvider])],
+  imports: [TypeOrmModule.forFeature([ServiceProvider]), AuthModule],
   controllers: [ServiceProvidersController],
   providers: [ServiceProvidersService],
   exports: [ServiceProvidersService],

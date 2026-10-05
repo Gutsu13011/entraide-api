@@ -1,15 +1,18 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, Post, UseGuards } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
+  ApiBearerAuth,
   ApiCreatedResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { ServiceOfferingService } from './service-offering.service.js';
 import { ServiceOffering } from './service-offering.entity.js';
 import { CreateServiceOfferingDto } from './dto/create-service-offering.dto.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 
 @ApiTags('service-offerings')
 @Controller('service-providers/:serviceProviderId/service-offerings')
@@ -31,6 +34,11 @@ export class ServiceOfferingsController {
   @ApiCreatedResponse({ type: ServiceOffering })
   @ApiBadRequestResponse({ description: 'The service provider id or request body is invalid' })
   @ApiNotFoundResponse({ description: 'Service provider not found' })
+  @ApiBearerAuth()
+  @ApiUnauthorizedResponse({
+    description: 'Missing, invalid or expired access token',
+  })
+  @UseGuards(JwtAuthGuard)
   @Post()
   create(
     @Param('serviceProviderId', ParseIntPipe) serviceProviderId: number,

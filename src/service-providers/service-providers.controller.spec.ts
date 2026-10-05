@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ServiceProvidersController } from './service-providers.controller.js';
 import { ServiceProvidersService } from './service-providers.service.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { ServiceProvider } from './service-provider.entity.js';
 import type { CreateServiceProviderDto } from './dto/create-service-provider.dto.js';
 import type { UpdateServiceProviderDto } from './dto/update-service-provider.dto.js';
@@ -28,7 +29,10 @@ describe('ServiceProvidersController', () => {
           useValue: serviceMock,
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<ServiceProvidersController>(ServiceProvidersController);
     service = module.get<ServiceProvidersService>(ServiceProvidersService);

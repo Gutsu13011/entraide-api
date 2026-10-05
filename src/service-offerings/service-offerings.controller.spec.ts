@@ -4,6 +4,7 @@ import { ServiceOfferingService } from './service-offering.service.js';
 import { ServiceOffering } from './service-offering.entity.js';
 import { ServicePricingType } from './service-pricing-type.enum.js';
 import type { CreateServiceOfferingDto } from './dto/create-service-offering.dto.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 
 describe('ServiceOfferingsController', () => {
   let controller: ServiceOfferingsController;
@@ -17,7 +18,10 @@ describe('ServiceOfferingsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ServiceOfferingsController],
       providers: [{ provide: ServiceOfferingService, useValue: serviceOfferingServiceMock }],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<ServiceOfferingsController>(ServiceOfferingsController);
   });

@@ -4,9 +4,10 @@ import { ServiceOffering } from './service-offering.entity.js';
 import { ServiceOfferingService } from './service-offering.service.js';
 import { ServiceProvidersModule } from '../service-providers/service-providers.module.js';
 import { ServiceOfferingsController } from './service-offerings.controller.js';
+import { AuthModule } from '../auth/auth.module.js';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([ServiceOffering]), ServiceProvidersModule],
+  imports: [TypeOrmModule.forFeature([ServiceOffering]), ServiceProvidersModule, AuthModule],
   providers: [ServiceOfferingService],
   controllers: [ServiceOfferingsController],
 })

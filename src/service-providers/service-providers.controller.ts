@@ -10,6 +10,7 @@ import {
   HttpCode,
   HttpStatus,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { ServiceProvidersService } from './service-providers.service.js';
 import { CreateServiceProviderDto } from './dto/create-service-provider.dto.js';
@@ -23,7 +24,10 @@ import {
   ApiBadRequestResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
+  ApiUnauthorizedResponse,
+  ApiBearerAuth,
 } from '@nestjs/swagger';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 
 @ApiTags('service-providers')
 @Controller('service-providers')
@@ -49,6 +53,11 @@ export class ServiceProvidersController {
 
   @ApiOperation({ summary: 'Create a service provider' })
   @ApiBadRequestResponse({ description: 'Invalid request body' })
+  @ApiBearerAuth()
+  @ApiUnauthorizedResponse({
+    description: 'Missing, invalid or expired access token',
+  })
+  @UseGuards(JwtAuthGuard)
   @Post()
   create(@Body() createServiceProviderDto: CreateServiceProviderDto): Promise<ServiceProvider> {
     return this.serviceProvidersService.create(createServiceProviderDto);
@@ -57,6 +66,11 @@ export class ServiceProvidersController {
   @ApiOperation({ summary: 'Update a service provider' })
   @ApiBadRequestResponse({ description: 'The id or request body is invalid' })
   @ApiNotFoundResponse({ description: 'Service provider not found' })
+  @ApiBearerAuth()
+  @ApiUnauthorizedResponse({
+    description: 'Missing, invalid or expired access token',
+  })
+  @UseGuards(JwtAuthGuard)
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -68,6 +82,11 @@ export class ServiceProvidersController {
   @ApiOperation({ summary: 'Delete a service provider' })
   @ApiBadRequestResponse({ description: 'The id must be an integer' })
   @ApiNotFoundResponse({ description: 'Service provider not found' })
+  @ApiBearerAuth()
+  @ApiUnauthorizedResponse({
+    description: 'Missing, invalid or expired access token',
+  })
+  @UseGuards(JwtAuthGuard)
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('id', ParseIntPipe) id: number): Promise<void> {
