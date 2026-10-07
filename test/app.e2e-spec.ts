@@ -14,11 +14,11 @@ import { JwtService } from '@nestjs/jwt';
 describe('AppController (e2e)', () => {
   let app: INestApplication;
 
-  async function getAccessToken(): Promise<string> {
+  async function getAccessToken(email: string = 'alicemartin@mail.com'): Promise<string> {
     const validUser = {
       firstName: 'Alice',
       lastName: 'Martin',
-      email: 'alicemartin@mail.com',
+      email,
       password: 'unmotdepassedaumoins15caracteres',
     };
 
@@ -285,7 +285,40 @@ describe('AppController (e2e)', () => {
     });
   });
 
-  it('/service-providers (POST)', async () => {
+  it('/service-providers (POST) should create a profile owned by the authenticated user using account names', async () => {
+    const createServiceProviderDto = {
+      firstName: 'Julie',
+      lastName: 'Durand',
+      profession: 'Peintre',
+      city: 'Marseille',
+      description: 'Peinture intérieure et extérieure',
+      hourlyRate: 35,
+      available: true,
+      imageUrl: '',
+    };
+    const accessToken = await getAccessToken();
+    const currentUserResponse = await request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+
+    return request(app.getHttpServer())
+      .post('/service-providers')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send(createServiceProviderDto)
+      .expect(201)
+      .expect((response) => {
+        expect(response.body).toMatchObject({
+          id: 3,
+          ...createServiceProviderDto,
+          ownerUserId: currentUserResponse.body.id,
+          firstName: currentUserResponse.body.firstName,
+          lastName: currentUserResponse.body.lastName,
+        });
+      });
+  });
+
+  it('/service-providers (POST) should reject a second profile for the same user', async () => {
     const createServiceProviderDto = {
       firstName: 'Julie',
       lastName: 'Durand',
@@ -298,16 +331,89 @@ describe('AppController (e2e)', () => {
     };
     const accessToken = await getAccessToken();
 
-    return request(app.getHttpServer())
+    await request(app.getHttpServer())
       .post('/service-providers')
       .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceProviderDto)
-      .expect(201)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post('/service-providers')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send(createServiceProviderDto)
+      .expect(409)
       .expect((response) => {
-        expect(response.body).toMatchObject({
-          id: 3,
-          ...createServiceProviderDto,
-        });
+        expect(response.body.message).toBe('User already owns a service provider profile');
+      });
+    await request(app.getHttpServer())
+      .get('/service-providers')
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.total).toBe(3);
+      });
+  });
+
+  it('/service-providers (POST) should reject a client-supplied owner id', async () => {
+    const createServiceProviderDto = {
+      firstName: 'Julie',
+      lastName: 'Durand',
+      profession: 'Peintre',
+      city: 'Marseille',
+      description: 'Peinture intérieure et extérieure',
+      hourlyRate: 35,
+      available: true,
+      imageUrl: '',
+      ownerUserId: 999,
+    };
+    const accessToken = await getAccessToken();
+
+    await request(app.getHttpServer())
+      .post('/service-providers')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send(createServiceProviderDto)
+      .expect(400)
+      .expect((response) => {
+        expect(response.body.message).toContain('property ownerUserId should not exist');
+      });
+    await request(app.getHttpServer())
+      .get('/service-providers')
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.total).toBe(2);
+      });
+  });
+
+  it('/service-providers (POST) should reject creation when the authenticated user no longer exists', async () => {
+    const createServiceProviderDto = {
+      firstName: 'Julie',
+      lastName: 'Durand',
+      profession: 'Peintre',
+      city: 'Marseille',
+      description: 'Peinture intérieure et extérieure',
+      hourlyRate: 35,
+      available: true,
+      imageUrl: '',
+    };
+    const accessToken = await getAccessToken();
+    const currentUserResponse = await request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+    const userRepository = app.get<Repository<User>>(getRepositoryToken(User));
+
+    await userRepository.delete(currentUserResponse.body.id);
+    await request(app.getHttpServer())
+      .post('/service-providers')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send(createServiceProviderDto)
+      .expect(401)
+      .expect((response) => {
+        expect(response.body.message).toBe('User no longer exists');
+      });
+    await request(app.getHttpServer())
+      .get('/service-providers')
+      .expect(200)
+      .expect((response) => {
+        expect(response.body.total).toBe(2);
       });
   });
 
@@ -337,38 +443,160 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers/1 (PATCH)', async () => {
+  it("/service-providers/:id (PATCH) should update the authenticated user's provider", async () => {
+    const createServiceProviderDto = {
+      firstName: 'Julie',
+      lastName: 'Durand',
+      profession: 'Peintre',
+      city: 'Marseille',
+      description: 'Peinture intérieure et extérieure',
+      hourlyRate: 35,
+      available: true,
+      imageUrl: '',
+    };
     const updateServiceProviderDto = {
       city: 'Nice',
       available: false,
     };
     const accessToken = await getAccessToken();
+    const createdProviderResponse = await request(app.getHttpServer())
+      .post('/service-providers/')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send(createServiceProviderDto)
+      .expect(201);
 
     return request(app.getHttpServer())
-      .patch('/service-providers/1')
+      .patch(`/service-providers/${createdProviderResponse.body.id}`)
       .set('Authorization', `Bearer ${accessToken}`)
       .send(updateServiceProviderDto)
       .expect(200)
       .expect((response) => {
         expect(response.body).toMatchObject({
-          id: 1,
-          firstName: 'Sophie',
+          id: createdProviderResponse.body.id,
+          firstName: 'Alice',
           city: 'Nice',
           available: false,
         });
       });
   });
 
-  it('/service-providers/1 (DELETE)', async () => {
+  it("/service-providers/:id (DELETE) should delete the authenticated user's provider", async () => {
+    const createServiceProviderDto = {
+      firstName: 'Julie',
+      lastName: 'Durand',
+      profession: 'Peintre',
+      city: 'Marseille',
+      description: 'Peinture intérieure et extérieure',
+      hourlyRate: 35,
+      available: true,
+      imageUrl: '',
+    };
     const accessToken = await getAccessToken();
+    const createdProviderResponse = await request(app.getHttpServer())
+      .post('/service-providers/')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send(createServiceProviderDto)
+      .expect(201);
     const deleteResponse = await request(app.getHttpServer())
-      .delete('/service-providers/1')
+      .delete(`/service-providers/${createdProviderResponse.body.id}`)
       .set('Authorization', `Bearer ${accessToken}`)
       .expect(204);
 
     expect(deleteResponse.text).toBe('');
 
-    await request(app.getHttpServer()).get('/service-providers/1').expect(404);
+    await request(app.getHttpServer())
+      .get(`/service-providers/${createdProviderResponse.body.id}`)
+      .expect(404);
+  });
+
+  it("/service-providers/:id (PATCH) should reject updating another user's provider", async () => {
+    const createServiceProviderDto = {
+      firstName: 'Julie',
+      lastName: 'Durand',
+      profession: 'Peintre',
+      city: 'Marseille',
+      description: 'Peinture intérieure et extérieure',
+      hourlyRate: 35,
+      available: true,
+      imageUrl: '',
+    };
+    const ownerToken = await getAccessToken();
+    const otherUserToken = await getAccessToken('other-user@example.com');
+
+    const createdProviderResponse = await request(app.getHttpServer())
+      .post('/service-providers')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(createServiceProviderDto)
+      .expect(201);
+
+    const providerId = createdProviderResponse.body.id;
+
+    await request(app.getHttpServer())
+      .patch(`/service-providers/${providerId}`)
+      .set('Authorization', `Bearer ${otherUserToken}`)
+      .send({
+        city: 'Nice',
+        available: false,
+      })
+      .expect(403)
+      .expect((response) => {
+        expect(response.body.message).toBe('You do not own this service provider profile');
+      });
+
+    await request(app.getHttpServer())
+      .get(`/service-providers/${providerId}`)
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toMatchObject({
+          id: providerId,
+          ownerUserId: createdProviderResponse.body.ownerUserId,
+          city: 'Marseille',
+          available: true,
+        });
+      });
+  });
+
+  it("/service-providers/:id (DELETE) should reject deleting another user's provider", async () => {
+    const createServiceProviderDto = {
+      firstName: 'Julie',
+      lastName: 'Durand',
+      profession: 'Peintre',
+      city: 'Marseille',
+      description: 'Peinture intérieure et extérieure',
+      hourlyRate: 35,
+      available: true,
+      imageUrl: '',
+    };
+    const ownerToken = await getAccessToken();
+    const otherUserToken = await getAccessToken('other-user@example.com');
+
+    const createdProviderResponse = await request(app.getHttpServer())
+      .post('/service-providers')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send(createServiceProviderDto)
+      .expect(201);
+
+    const providerId = createdProviderResponse.body.id;
+
+    await request(app.getHttpServer())
+      .delete(`/service-providers/${providerId}`)
+      .set('Authorization', `Bearer ${otherUserToken}`)
+      .expect(403)
+      .expect((response) => {
+        expect(response.body.message).toBe('You do not own this service provider profile');
+      });
+
+    await request(app.getHttpServer())
+      .get(`/service-providers/${providerId}`)
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toMatchObject({
+          id: providerId,
+          ownerUserId: createdProviderResponse.body.ownerUserId,
+          city: 'Marseille',
+          available: true,
+        });
+      });
   });
 
   it('/service-providers (POST) should return 400 property id should not exist', async () => {
@@ -567,7 +795,7 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers/1/service-offerings (POST)', async () => {
+  it("/service-providers/:id/service-offerings (POST) should create an offering for the authenticated user's provider", async () => {
     const createServiceOfferingMock = {
       title: 'title',
       description: 'description',
@@ -575,9 +803,24 @@ describe('AppController (e2e)', () => {
       hourlyRate: 20,
     };
     const accessToken = await getAccessToken();
+    const createdProviderResponse = await request(app.getHttpServer())
+      .post('/service-providers')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({
+        firstName: 'Julie',
+        lastName: 'Durand',
+        profession: 'Peintre',
+        city: 'Marseille',
+        description: 'Peinture intérieure et extérieure',
+        hourlyRate: 35,
+        available: true,
+        imageUrl: '',
+      })
+      .expect(201);
+    const serviceProviderId = createdProviderResponse.body.id;
 
     return request(app.getHttpServer())
-      .post('/service-providers/1/service-offerings')
+      .post(`/service-providers/${serviceProviderId}/service-offerings`)
       .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceOfferingMock)
       .expect(201)
@@ -585,12 +828,54 @@ describe('AppController (e2e)', () => {
         expect(response.body).toMatchObject({
           id: 1,
           ...createServiceOfferingMock,
-          serviceProviderId: 1,
+          serviceProviderId,
         });
       });
   });
 
-  it('/service-providers/1/service-offerings (GET)', async () => {
+  it("/service-providers/:id/service-offerings (POST) should reject creating an offering for another user's provider", async () => {
+    const ownerToken = await getAccessToken();
+    const otherUserToken = await getAccessToken('other-user@example.com');
+
+    const createdProviderResponse = await request(app.getHttpServer())
+      .post('/service-providers')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        firstName: 'Julie',
+        lastName: 'Durand',
+        profession: 'Peintre',
+        city: 'Marseille',
+        description: 'Peinture intérieure et extérieure',
+        hourlyRate: 35,
+        available: true,
+        imageUrl: '',
+      })
+      .expect(201);
+    const serviceProviderId = createdProviderResponse.body.id;
+
+    await request(app.getHttpServer())
+      .post(`/service-providers/${serviceProviderId}/service-offerings`)
+      .set('Authorization', `Bearer ${otherUserToken}`)
+      .send({
+        title: 'Peinture intérieure',
+        description: 'Peinture des murs et plafonds',
+        pricingType: ServicePricingType.HOURLY,
+        hourlyRate: 35,
+      })
+      .expect(403)
+      .expect((response) => {
+        expect(response.body.message).toBe('You do not own this service provider profile');
+      });
+
+    await request(app.getHttpServer())
+      .get(`/service-providers/${serviceProviderId}/service-offerings`)
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toEqual([]);
+      });
+  });
+
+  it('/service-providers/:id/service-offerings (GET) should return hourly and free offerings without authentication', async () => {
     const createServiceOffering1 = {
       title: 'title1',
       description: 'description1',
@@ -603,33 +888,48 @@ describe('AppController (e2e)', () => {
       pricingType: ServicePricingType.FREE,
     };
     const accessToken = await getAccessToken();
+    const createdProviderResponse = await request(app.getHttpServer())
+      .post('/service-providers')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({
+        firstName: 'Julie',
+        lastName: 'Durand',
+        profession: 'Peintre',
+        city: 'Marseille',
+        description: 'Peinture intérieure et extérieure',
+        hourlyRate: 35,
+        available: true,
+        imageUrl: '',
+      })
+      .expect(201);
+    const serviceProviderId = createdProviderResponse.body.id;
 
     await request(app.getHttpServer())
-      .post('/service-providers/1/service-offerings')
+      .post(`/service-providers/${serviceProviderId}/service-offerings`)
       .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceOffering1)
       .expect(201);
     await request(app.getHttpServer())
-      .post('/service-providers/1/service-offerings')
+      .post(`/service-providers/${serviceProviderId}/service-offerings`)
       .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceOffering2)
       .expect(201);
 
     return request(app.getHttpServer())
-      .get('/service-providers/1/service-offerings')
+      .get(`/service-providers/${serviceProviderId}/service-offerings`)
       .expect(200)
       .expect((response) => {
         expect(response.body).toHaveLength(2);
         expect(response.body[0]).toMatchObject({
           id: 1,
           ...createServiceOffering1,
-          serviceProviderId: 1,
+          serviceProviderId,
         });
         expect(response.body[1]).toMatchObject({
           id: 2,
           ...createServiceOffering2,
           hourlyRate: null,
-          serviceProviderId: 1,
+          serviceProviderId,
         });
       });
   });
@@ -652,7 +952,7 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers/1/service-offerings (POST) should return 400', async () => {
+  it('/service-providers/:id/service-offerings (POST) should reject a free offering with an hourly rate', async () => {
     const createServiceOfferingMock = {
       title: 'title',
       description: 'description',
@@ -660,9 +960,24 @@ describe('AppController (e2e)', () => {
       hourlyRate: 20,
     };
     const accessToken = await getAccessToken();
+    const createdProviderResponse = await request(app.getHttpServer())
+      .post('/service-providers')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({
+        firstName: 'Julie',
+        lastName: 'Durand',
+        profession: 'Peintre',
+        city: 'Marseille',
+        description: 'Peinture intérieure et extérieure',
+        hourlyRate: 35,
+        available: true,
+        imageUrl: '',
+      })
+      .expect(201);
+    const serviceProviderId = createdProviderResponse.body.id;
 
     return request(app.getHttpServer())
-      .post('/service-providers/1/service-offerings')
+      .post(`/service-providers/${serviceProviderId}/service-offerings`)
       .set('Authorization', `Bearer ${accessToken}`)
       .send(createServiceOfferingMock)
       .expect(400)

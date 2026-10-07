@@ -5,6 +5,7 @@ import { ServiceOffering } from './service-offering.entity.js';
 import { ServicePricingType } from './service-pricing-type.enum.js';
 import type { CreateServiceOfferingDto } from './dto/create-service-offering.dto.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import type { Request } from 'express';
 
 describe('ServiceOfferingsController', () => {
   let controller: ServiceOfferingsController;
@@ -58,7 +59,7 @@ describe('ServiceOfferingsController', () => {
   });
 
   describe('create', () => {
-    it('should create a service offering for a service provider', async () => {
+    it('should pass the provider id, DTO and authenticated user id to the service and return its result', async () => {
       const serviceProviderId = 1;
       const serviceOfferingMock: CreateServiceOfferingDto = {
         title: 'titre1',
@@ -71,14 +72,16 @@ describe('ServiceOfferingsController', () => {
         ...serviceOfferingMock,
         serviceProviderId,
       });
+      const requestMock = { user: { id: 7 } } as Request & { user: { id: number } };
 
       serviceOfferingServiceMock.create.mockResolvedValue(expectedServiceOffering);
 
-      const result = await controller.create(serviceProviderId, serviceOfferingMock);
+      const result = await controller.create(serviceProviderId, serviceOfferingMock, requestMock);
 
       expect(serviceOfferingServiceMock.create).toHaveBeenCalledWith(
         serviceProviderId,
         serviceOfferingMock,
+        requestMock.user.id,
       );
       expect(result).toBe(expectedServiceOffering);
     });

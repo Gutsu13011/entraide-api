@@ -34,8 +34,9 @@ export class ServiceOfferingService {
   async create(
     serviceProviderId: number,
     createServiceOfferingDto: CreateServiceOfferingDto,
+    userId: number,
   ): Promise<ServiceOffering> {
-    await this.serviceProvidersService.findOne(serviceProviderId);
+    await this.serviceProvidersService.findOneOwnedByOrFail(serviceProviderId, userId);
 
     const serviceOffering = this.serviceOfferingsRepository.create({
       ...createServiceOfferingDto,

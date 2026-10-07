@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { Repository, FindOptionsWhere } from 'typeorm';
 import { Like } from 'typeorm';
@@ -7,12 +13,14 @@ import type { CreateServiceProviderDto } from './dto/create-service-provider.dto
 import type { UpdateServiceProviderDto } from './dto/update-service-provider.dto.js';
 import type { QueryServiceProvidersDto } from './dto/query-service-providers.dto.js';
 import type { PaginatedServiceProvidersDto } from './dto/paginated-service-providers.dto.js';
+import { UsersService } from '../users/users.service.js';
 
 @Injectable()
 export class ServiceProvidersService {
   constructor(
     @InjectRepository(ServiceProvider)
     private readonly serviceProvidersRepository: Repository<ServiceProvider>,
+    private readonly usersService: UsersService,
   ) {}
 
   private async findOneOrFail(id: number): Promise<ServiceProvider> {
@@ -58,8 +66,28 @@ export class ServiceProvidersService {
     return this.findOneOrFail(id);
   }
 
-  async create(createServiceProviderDto: CreateServiceProviderDto): Promise<ServiceProvider> {
-    const serviceProvider = this.serviceProvidersRepository.create(createServiceProviderDto);
+  async create(
+    createServiceProviderDto: CreateServiceProviderDto,
+    ownerUserId: number,
+  ): Promise<ServiceProvider> {
+    const user = await this.usersService.findById(ownerUserId);
+
+    if (user === null) {
+      throw new UnauthorizedException('User no longer exists');
+    }
+
+    const serviceProviderUser = await this.serviceProvidersRepository.findOneBy({ ownerUserId });
+
+    if (serviceProviderUser !== null) {
+      throw new ConflictException('User already owns a service provider profile');
+    }
+
+    const serviceProvider = this.serviceProvidersRepository.create({
+      ...createServiceProviderDto,
+      lastName: user.lastName,
+      firstName: user.firstName,
+      ownerUserId,
+    });
 
     return this.serviceProvidersRepository.save(serviceProvider);
   }
@@ -67,17 +95,28 @@ export class ServiceProvidersService {
   async update(
     id: number,
     updateServiceProviderDto: UpdateServiceProviderDto,
+    userId: number,
   ): Promise<ServiceProvider> {
-    const serviceProvider = await this.findOneOrFail(id);
+    const serviceProvider = await this.findOneOwnedByOrFail(id, userId);
 
     Object.assign(serviceProvider, updateServiceProviderDto);
 
     return this.serviceProvidersRepository.save(serviceProvider);
   }
 
-  async remove(id: number): Promise<void> {
-    const serviceProvider = await this.findOneOrFail(id);
+  async remove(id: number, userId: number): Promise<void> {
+    const serviceProvider = await this.findOneOwnedByOrFail(id, userId);
 
     await this.serviceProvidersRepository.remove(serviceProvider);
+  }
+
+  async findOneOwnedByOrFail(id: number, userId: number): Promise<ServiceProvider> {
+    const serviceProvider = await this.findOneOrFail(id);
+
+    if (serviceProvider.ownerUserId !== userId) {
+      throw new ForbiddenException('You do not own this service provider profile');
+    }
+
+    return serviceProvider;
   }
 }

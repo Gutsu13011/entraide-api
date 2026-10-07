@@ -11,6 +11,7 @@ import {
   HttpStatus,
   Query,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import { ServiceProvidersService } from './service-providers.service.js';
 import { CreateServiceProviderDto } from './dto/create-service-provider.dto.js';
@@ -26,8 +27,11 @@ import {
   ApiOkResponse,
   ApiUnauthorizedResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
+  ApiForbiddenResponse,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import type { Request } from 'express';
 
 @ApiTags('service-providers')
 @Controller('service-providers')
@@ -55,12 +59,18 @@ export class ServiceProvidersController {
   @ApiBadRequestResponse({ description: 'Invalid request body' })
   @ApiBearerAuth()
   @ApiUnauthorizedResponse({
-    description: 'Missing, invalid or expired access token',
+    description: 'Missing, invalid or expired access token, or the user no longer exists',
+  })
+  @ApiConflictResponse({
+    description: 'The authenticated user already owns a service provider profile',
   })
   @UseGuards(JwtAuthGuard)
   @Post()
-  create(@Body() createServiceProviderDto: CreateServiceProviderDto): Promise<ServiceProvider> {
-    return this.serviceProvidersService.create(createServiceProviderDto);
+  create(
+    @Body() createServiceProviderDto: CreateServiceProviderDto,
+    @Req() request: Request & { user: { id: number } },
+  ): Promise<ServiceProvider> {
+    return this.serviceProvidersService.create(createServiceProviderDto, request.user.id);
   }
 
   @ApiOperation({ summary: 'Update a service provider' })
@@ -70,13 +80,17 @@ export class ServiceProvidersController {
   @ApiUnauthorizedResponse({
     description: 'Missing, invalid or expired access token',
   })
+  @ApiForbiddenResponse({
+    description: 'The authenticated user does not own this service provider profile',
+  })
   @UseGuards(JwtAuthGuard)
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() updateServiceProviderDto: UpdateServiceProviderDto,
+    @Req() request: Request & { user: { id: number } },
   ): Promise<ServiceProvider> {
-    return this.serviceProvidersService.update(id, updateServiceProviderDto);
+    return this.serviceProvidersService.update(id, updateServiceProviderDto, request.user.id);
   }
 
   @ApiOperation({ summary: 'Delete a service provider' })
@@ -86,10 +100,16 @@ export class ServiceProvidersController {
   @ApiUnauthorizedResponse({
     description: 'Missing, invalid or expired access token',
   })
+  @ApiForbiddenResponse({
+    description: 'The authenticated user does not own this service provider profile',
+  })
   @UseGuards(JwtAuthGuard)
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  remove(@Param('id', ParseIntPipe) id: number): Promise<void> {
-    return this.serviceProvidersService.remove(id);
+  remove(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() request: Request & { user: { id: number } },
+  ): Promise<void> {
+    return this.serviceProvidersService.remove(id, request.user.id);
   }
 }

@@ -7,6 +7,7 @@ import type { CreateServiceProviderDto } from './dto/create-service-provider.dto
 import type { UpdateServiceProviderDto } from './dto/update-service-provider.dto.js';
 import type { PaginatedServiceProvidersDto } from './dto/paginated-service-providers.dto.js';
 import type { QueryServiceProvidersDto } from './dto/query-service-providers.dto.js';
+import type { Request } from 'express';
 
 describe('ServiceProvidersController', () => {
   let controller: ServiceProvidersController;
@@ -78,6 +79,7 @@ describe('ServiceProvidersController', () => {
         hourlyRate: 40,
         available: true,
         imageUrl: '',
+        ownerUserId: null,
       };
       serviceMock.findOne.mockResolvedValue(expectedServiceProvider);
 
@@ -89,7 +91,7 @@ describe('ServiceProvidersController', () => {
   });
 
   describe('create', () => {
-    it('should pass the DTO to the service and return the created provider', async () => {
+    it('should pass the DTO and authenticated user id to the service and return the created provider', async () => {
       const createServiceProviderDto: CreateServiceProviderDto = {
         firstName: 'Julie',
         lastName: 'Durand',
@@ -103,18 +105,22 @@ describe('ServiceProvidersController', () => {
       const expectedServiceProvider: ServiceProvider = {
         id: 3,
         ...createServiceProviderDto,
+        firstName: 'Alice',
+        lastName: 'Martin',
+        ownerUserId: 7,
       };
+      const requestMock = { user: { id: 7 } } as Request & { user: { id: number } };
       const createSpy = vi.spyOn(service, 'create').mockResolvedValue(expectedServiceProvider);
 
-      const result = await controller.create(createServiceProviderDto);
+      const result = await controller.create(createServiceProviderDto, requestMock);
 
-      expect(createSpy).toHaveBeenCalledWith(createServiceProviderDto);
+      expect(createSpy).toHaveBeenCalledWith(createServiceProviderDto, requestMock.user.id);
       expect(result).toBe(expectedServiceProvider);
     });
   });
 
   describe('update', () => {
-    it('should pass the id and DTO to the service and return its result', async () => {
+    it('should pass the id, DTO and authenticated user id to the service and return its result', async () => {
       const updateServiceProviderDto: UpdateServiceProviderDto = {
         city: 'Nice',
         available: false,
@@ -129,23 +135,27 @@ describe('ServiceProvidersController', () => {
         imageUrl: '',
         city: 'Nice',
         available: false,
+        ownerUserId: 7,
       };
       const updateSpy = vi.spyOn(service, 'update').mockResolvedValue(expectedServiceProvider);
+      const requestMock = { user: { id: 7 } } as Request & { user: { id: number } };
 
-      const result = await controller.update(1, updateServiceProviderDto);
+      const result = await controller.update(1, updateServiceProviderDto, requestMock);
 
-      expect(updateSpy).toHaveBeenCalledWith(1, updateServiceProviderDto);
+      expect(updateSpy).toHaveBeenCalledWith(1, updateServiceProviderDto, requestMock.user.id);
       expect(result).toBe(expectedServiceProvider);
     });
   });
 
   describe('remove', () => {
-    it('should pass the id to the service and return undefined', async () => {
+    it('should pass the id and authenticated user id to the service and return undefined', async () => {
+      const requestMock = { user: { id: 7 } } as Request & { user: { id: number } };
+
       serviceMock.remove.mockResolvedValue(undefined);
 
-      const result = await controller.remove(1);
+      const result = await controller.remove(1, requestMock);
 
-      expect(serviceMock.remove).toHaveBeenCalledWith(1);
+      expect(serviceMock.remove).toHaveBeenCalledWith(1, 7);
       expect(result).toBeUndefined();
     });
   });

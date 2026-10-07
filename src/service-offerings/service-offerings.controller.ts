@@ -1,8 +1,9 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, Post, Req, UseGuards } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
   ApiCreatedResponse,
+  ApiForbiddenResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -13,6 +14,7 @@ import { ServiceOfferingService } from './service-offering.service.js';
 import { ServiceOffering } from './service-offering.entity.js';
 import { CreateServiceOfferingDto } from './dto/create-service-offering.dto.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import type { Request } from 'express';
 
 @ApiTags('service-offerings')
 @Controller('service-providers/:serviceProviderId/service-offerings')
@@ -38,12 +40,20 @@ export class ServiceOfferingsController {
   @ApiUnauthorizedResponse({
     description: 'Missing, invalid or expired access token',
   })
+  @ApiForbiddenResponse({
+    description: 'The authenticated user does not own this service provider profile',
+  })
   @UseGuards(JwtAuthGuard)
   @Post()
   create(
     @Param('serviceProviderId', ParseIntPipe) serviceProviderId: number,
     @Body() createServiceOfferingDto: CreateServiceOfferingDto,
+    @Req() request: Request & { user: { id: number } },
   ): Promise<ServiceOffering> {
-    return this.serviceOfferingService.create(serviceProviderId, createServiceOfferingDto);
+    return this.serviceOfferingService.create(
+      serviceProviderId,
+      createServiceOfferingDto,
+      request.user.id,
+    );
   }
 }

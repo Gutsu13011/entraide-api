@@ -22,12 +22,14 @@ service.
 - Unit and end-to-end tests
 - GitHub Actions workflow for automated checks
 - Authentication and user accounts
+- One provider profile per account, with owner-only updates, deletion and offering creation
 
 ## Project status
 
 The application is under active development.
 User registration, login and a protected profile endpoint are available.
-Service requests and ownership-based authorization are planned.
+Provider ownership and authorization are implemented for profile updates,
+deletion and service offering creation. Service requests are planned.
 The current version is intended for local development and demonstration.
 
 ## Requirements
@@ -40,7 +42,7 @@ The current version is intended for local development and demonstration.
 Run these commands from the project directory:
 
 ```bash
-npm ci
+npm ci &&
 cp .env.example .env
 ```
 
@@ -48,7 +50,7 @@ Generate a secret with `openssl rand -base64 32` and paste its output after
 `JWT_SECRET=` in `.env`. Do this before starting the API. Never commit `.env`.
 
 ```bash
-npm run migration:run
+npm run migration:run &&
 npm run start:dev
 ```
 
@@ -71,7 +73,7 @@ Service offering endpoints:
 - `POST /service-providers/:serviceProviderId/service-offerings` creates an offering.
 
 Service providers can be created through Swagger UI with a valid access token.
-Frontend integration for authenticated write requests is the next step.
+The Angular frontend sends access tokens with authenticated API requests.
 
 ## Authentication
 
@@ -92,8 +94,29 @@ The following operations require a valid access token:
 
 Provider, offering and review consultation endpoints remain public.
 
-Authentication identifies the caller. Ownership-based authorization is
-not implemented yet: these operations currently accept any authenticated user.
+### Provider ownership
+
+Each account can create at most one service provider profile. The API derives
+its owner from the verified access token and uses the account's first and last
+names when creating the profile. A client-supplied `ownerUserId` is rejected.
+A second profile creation for the same account returns `409 Conflict`.
+
+Only the profile owner can update or delete it, or add service offerings to it.
+Attempts by another authenticated user return `403 Forbidden`.
+Review creation currently remains available to authenticated users; linking
+reviews to completed service requests is planned.
+
+Existing and demo profiles have no owner (`ownerUserId: null`). They remain
+publicly readable, but authenticated users cannot update or delete them, or
+add offerings to them. The ownership migration preserves existing profiles,
+reviews and offerings.
+
+When reverting `AddServiceProviderOwner`, use `--transaction none` to preserve
+related data. If it is the latest applied migration, run:
+
+```bash
+npm run migration:revert -- --transaction none
+```
 
 ## Demo data
 
@@ -101,8 +124,8 @@ To populate an empty local database with 12 fictional service providers,
 7 reviews and 14 service offerings, configure your `.env` file, then run:
 
 ```bash
-npm run build
-npm run migration:run:prod
+npm run build &&
+npm run migration:run:prod &&
 npm run seed:demo
 ```
 
@@ -155,9 +178,9 @@ the application. The API will not start with an empty value.
 Then install, build, migrate, and start the application in this order:
 
 ```bash
-npm ci
-npm run build
-npm run migration:run:prod
+npm ci &&
+npm run build &&
+npm run migration:run:prod &&
 npm run start:prod
 ```
 
@@ -166,10 +189,10 @@ Database migrations are executed as a separate deployment step before the applic
 ## Quality checks
 
 ```bash
-npm run format:check
-npm run lint
-npm run build
-npm test
+npm run format:check &&
+npm run lint &&
+npm run build &&
+npm test &&
 npm run test:e2e
 ```
 

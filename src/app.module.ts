@@ -18,6 +18,7 @@ import { UsersModule } from './users/users.module.js';
 import { CreateUsersTable1790601439138 } from './database/migrations/1790601439138-CreateUsersTable.js';
 import { AuthModule } from './auth/auth.module.js';
 import { JwtService } from '@nestjs/jwt';
+import { AddServiceProviderOwner1791272307897 } from './database/migrations/1791272307897-AddServiceProviderOwner.js';
 
 const testMigrations = [
   InitialSchema1789026143459,
@@ -25,6 +26,7 @@ const testMigrations = [
   CreateReviewsTable1789293137887,
   CreateServiceOfferingsTable1790070822998,
   CreateUsersTable1790601439138,
+  AddServiceProviderOwner1791272307897,
 ];
 @Module({
   imports: [

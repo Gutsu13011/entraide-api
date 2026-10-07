@@ -5,7 +5,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { ServiceProvidersService } from '../service-providers/service-providers.service.js';
 import { CreateServiceOfferingDto } from './dto/create-service-offering.dto.js';
 import { ServicePricingType } from './service-pricing-type.enum.js';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 
 describe('ServiceOfferingService', () => {
   let service: ServiceOfferingService;
@@ -16,10 +16,13 @@ describe('ServiceOfferingService', () => {
   };
   const serviceProvidersServiceMock = {
     findOne: vi.fn(),
+    findOneOwnedByOrFail: vi.fn(),
   };
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    serviceProvidersServiceMock.findOneOwnedByOrFail.mockReset();
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ServiceOfferingService,
@@ -47,14 +50,21 @@ describe('ServiceOfferingService', () => {
       hourlyRate: 45,
     };
     const expectedServiceOffering = { id: 1, ...createServiceOfferingDto, serviceProviderId };
+    const userId = 7;
 
-    serviceProvidersServiceMock.findOne.mockResolvedValue({ id: serviceProviderId });
+    serviceProvidersServiceMock.findOneOwnedByOrFail.mockResolvedValue({
+      id: serviceProviderId,
+      ownerUserId: userId,
+    });
     repositoryMock.create.mockReturnValue(expectedServiceOffering);
     repositoryMock.save.mockResolvedValue(expectedServiceOffering);
 
-    const result = await service.create(serviceProviderId, createServiceOfferingDto);
+    const result = await service.create(serviceProviderId, createServiceOfferingDto, userId);
 
-    expect(serviceProvidersServiceMock.findOne).toHaveBeenCalledWith(serviceProviderId);
+    expect(serviceProvidersServiceMock.findOneOwnedByOrFail).toHaveBeenCalledWith(
+      serviceProviderId,
+      userId,
+    );
     expect(repositoryMock.create).toHaveBeenCalledWith({
       serviceProviderId,
       ...createServiceOfferingDto,
@@ -77,14 +87,21 @@ describe('ServiceOfferingService', () => {
       serviceProviderId,
       hourlyRate: null,
     };
+    const userId = 7;
 
-    serviceProvidersServiceMock.findOne.mockResolvedValue({ id: serviceProviderId });
+    serviceProvidersServiceMock.findOneOwnedByOrFail.mockResolvedValue({
+      id: serviceProviderId,
+      ownerUserId: userId,
+    });
     repositoryMock.create.mockReturnValue(expectedServiceOffering);
     repositoryMock.save.mockResolvedValue(expectedServiceOffering);
 
-    const result = await service.create(serviceProviderId, createServiceOfferingDto);
+    const result = await service.create(serviceProviderId, createServiceOfferingDto, userId);
 
-    expect(serviceProvidersServiceMock.findOne).toHaveBeenCalledWith(serviceProviderId);
+    expect(serviceProvidersServiceMock.findOneOwnedByOrFail).toHaveBeenCalledWith(
+      serviceProviderId,
+      userId,
+    );
     expect(repositoryMock.create).toHaveBeenCalledWith({
       serviceProviderId,
       ...createServiceOfferingDto,
@@ -103,14 +120,21 @@ describe('ServiceOfferingService', () => {
       hourlyRate: 20,
     };
     const error = new BadRequestException('A free service offering cannot have an hourly rate');
+    const userId = 7;
 
-    serviceProvidersServiceMock.findOne.mockResolvedValue({ id: serviceProviderId });
+    serviceProvidersServiceMock.findOneOwnedByOrFail.mockResolvedValue({
+      id: serviceProviderId,
+      ownerUserId: userId,
+    });
 
-    await expect(service.create(serviceProviderId, createServiceOfferingDto)).rejects.toStrictEqual(
-      error,
+    await expect(
+      service.create(serviceProviderId, createServiceOfferingDto, userId),
+    ).rejects.toStrictEqual(error);
+
+    expect(serviceProvidersServiceMock.findOneOwnedByOrFail).toHaveBeenCalledWith(
+      serviceProviderId,
+      userId,
     );
-
-    expect(serviceProvidersServiceMock.findOne).toHaveBeenCalledWith(serviceProviderId);
     expect(repositoryMock.create).not.toHaveBeenCalled();
     expect(repositoryMock.save).not.toHaveBeenCalled();
   });
@@ -123,14 +147,44 @@ describe('ServiceOfferingService', () => {
       pricingType: ServicePricingType.HOURLY,
     };
     const error = new BadRequestException('An hourly service offering requires an hourly rate');
+    const userId = 7;
 
-    serviceProvidersServiceMock.findOne.mockResolvedValue({ id: serviceProviderId });
+    serviceProvidersServiceMock.findOneOwnedByOrFail.mockResolvedValue({
+      id: serviceProviderId,
+      ownerUserId: userId,
+    });
 
-    await expect(service.create(serviceProviderId, createServiceOfferingDto)).rejects.toStrictEqual(
+    await expect(
+      service.create(serviceProviderId, createServiceOfferingDto, userId),
+    ).rejects.toStrictEqual(error);
+
+    expect(serviceProvidersServiceMock.findOneOwnedByOrFail).toHaveBeenCalledWith(
+      serviceProviderId,
+      userId,
+    );
+    expect(repositoryMock.create).not.toHaveBeenCalled();
+    expect(repositoryMock.save).not.toHaveBeenCalled();
+  });
+
+  it('should reject creating an offering when the user does not own the provider', async () => {
+    const serviceProviderId = 1;
+    const createServiceOfferingDto: CreateServiceOfferingDto = {
+      title: 'Hello',
+      description: 'Je suis une description',
+      pricingType: ServicePricingType.HOURLY,
+      hourlyRate: 45,
+    };
+    const error = new ForbiddenException('You do not own this service provider profile');
+    const userId = 8;
+
+    serviceProvidersServiceMock.findOneOwnedByOrFail.mockRejectedValue(error);
+    await expect(service.create(serviceProviderId, createServiceOfferingDto, userId)).rejects.toBe(
       error,
     );
-
-    expect(serviceProvidersServiceMock.findOne).toHaveBeenCalledWith(serviceProviderId);
+    expect(serviceProvidersServiceMock.findOneOwnedByOrFail).toHaveBeenCalledWith(
+      serviceProviderId,
+      userId,
+    );
     expect(repositoryMock.create).not.toHaveBeenCalled();
     expect(repositoryMock.save).not.toHaveBeenCalled();
   });
