@@ -5,6 +5,7 @@ import { AppModule } from './../src/app.module.js';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ServiceProvider } from './../src/service-providers/service-provider.entity.js';
+import { ServiceOffering } from '../src/service-offerings/service-offering.entity.js';
 import { ServicePricingType } from '../src/service-offerings/service-pricing-type.enum.js';
 import { User } from '../src/users/user.entity.js';
 import { UsersService } from '../src/users/users.service.js';
@@ -1233,6 +1234,309 @@ describe('AppController (e2e)', () => {
       .expect((response) => {
         expect(response.body).toHaveLength(0);
       });
+  });
+
+  describe('service offering updates', () => {
+    let ownerToken: string;
+    let providerId: number;
+    let originalOffering: ServiceOffering;
+    let offeringsRepository: Repository<ServiceOffering>;
+
+    beforeEach(async () => {
+      ownerToken = await getAccessToken();
+      const providerResponse = await request(app.getHttpServer())
+        .post('/service-providers')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({
+          firstName: 'Alice',
+          lastName: 'Martin',
+          profession: 'Plombière',
+          city: 'Paris',
+          description: 'Installation et dépannage de plomberie.',
+          hourlyRate: 35,
+          available: true,
+          imageUrl: '',
+        })
+        .expect(201);
+      providerId = providerResponse.body.id;
+      const offeringResponse = await request(app.getHttpServer())
+        .post(`/service-providers/${providerId}/service-offerings`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({
+          title: 'Conseil plomberie',
+          description: 'Conseils pour entretenir votre installation.',
+          pricingType: ServicePricingType.HOURLY,
+          hourlyRate: 35,
+        })
+        .expect(201);
+      originalOffering = offeringResponse.body;
+      offeringsRepository = app.get<Repository<ServiceOffering>>(
+        getRepositoryToken(ServiceOffering),
+      );
+    });
+
+    function patchOffering(body: object) {
+      return request(app.getHttpServer())
+        .patch(`/service-providers/${providerId}/service-offerings/${originalOffering.id}`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send(body);
+    }
+
+    async function expectStoredOffering(expected: ServiceOffering = originalOffering) {
+      expect(await offeringsRepository.findOneByOrFail({ id: originalOffering.id })).toEqual(
+        expected,
+      );
+      const response = await request(app.getHttpServer())
+        .get(`/service-providers/${providerId}/service-offerings`)
+        .expect(200);
+      expect(response.body).toEqual([expected]);
+    }
+
+    it('/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should update text while preserving omitted pricing fields', async () => {
+      const update = { title: 'Nouveau titre', description: 'Description mise à jour.' };
+      const response = await patchOffering(update);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+      expect(response.body).toEqual({ ...originalOffering, ...update });
+      await expectStoredOffering({ ...originalOffering, ...update });
+    });
+
+    it('/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should clear the rate when changing to free and accept a new rate when changing back to hourly', async () => {
+      const freeOffering = {
+        ...originalOffering,
+        pricingType: ServicePricingType.FREE,
+        hourlyRate: null,
+      };
+      const freeResponse = await patchOffering({ pricingType: ServicePricingType.FREE }).expect(
+        200,
+      );
+      expect(freeResponse.body).toEqual(freeOffering);
+      await expectStoredOffering(freeOffering);
+
+      const hourlyOffering = { ...originalOffering, hourlyRate: 42 };
+      const hourlyResponse = await patchOffering({
+        pricingType: ServicePricingType.HOURLY,
+        hourlyRate: 42,
+      }).expect(200);
+      expect(hourlyResponse.body).toEqual(hourlyOffering);
+      await expectStoredOffering(hourlyOffering);
+    });
+
+    it('/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should accept an explicit null rate when changing to free', async () => {
+      const update = { pricingType: ServicePricingType.FREE, hourlyRate: null };
+      const response = await patchOffering(update).expect(200);
+      expect(response.body).toEqual({ ...originalOffering, ...update });
+      await expectStoredOffering({ ...originalOffering, ...update });
+    });
+
+    it('/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should update only the rate of an hourly offering', async () => {
+      const response = await patchOffering({ hourlyRate: 0.01 }).expect(200);
+      expect(response.body).toEqual({ ...originalOffering, hourlyRate: 0.01 });
+      await expectStoredOffering({ ...originalOffering, hourlyRate: 0.01 });
+    });
+
+    it('/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should preserve free pricing when updating only the title', async () => {
+      const freeOffering = {
+        ...originalOffering,
+        pricingType: ServicePricingType.FREE,
+        hourlyRate: null,
+      };
+      await offeringsRepository.save(freeOffering);
+      const response = await patchOffering({ title: 'Conseil gratuit' }).expect(200);
+      const expected = { ...freeOffering, title: 'Conseil gratuit' };
+      expect(response.body).toEqual(expected);
+      await expectStoredOffering(expected);
+    });
+
+    it.each([
+      { label: 'an omitted hourly rate', update: { pricingType: ServicePricingType.HOURLY } },
+      {
+        label: 'a null hourly rate',
+        update: { pricingType: ServicePricingType.HOURLY, hourlyRate: null },
+      },
+    ])(
+      '/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should reject changing to hourly with $label',
+      async ({ update }) => {
+        const freeOffering = {
+          ...originalOffering,
+          pricingType: ServicePricingType.FREE,
+          hourlyRate: null,
+        };
+        await offeringsRepository.save(freeOffering);
+        const response = await patchOffering(update).expect(400);
+        expect(response.body.message).toBe('An hourly service offering requires an hourly rate');
+        await expectStoredOffering(freeOffering);
+      },
+    );
+
+    it('/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should reject a null rate when the offering remains hourly', async () => {
+      const response = await patchOffering({ hourlyRate: null }).expect(400);
+      expect(response.body.message).toBe('An hourly service offering requires an hourly rate');
+      await expectStoredOffering();
+    });
+
+    it.each([ServicePricingType.HOURLY, ServicePricingType.FREE])(
+      '/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should reject a rate on a free offering initially priced as %s',
+      async (initialType) => {
+        const initialOffering = {
+          ...originalOffering,
+          pricingType: initialType,
+          hourlyRate: initialType === ServicePricingType.FREE ? null : 35,
+        };
+        await offeringsRepository.save(initialOffering);
+        const update =
+          initialType === ServicePricingType.FREE
+            ? { hourlyRate: 20 }
+            : { pricingType: ServicePricingType.FREE, hourlyRate: 20 };
+        const response = await patchOffering(update).expect(400);
+        expect(response.body.message).toBe('A free service offering cannot have an hourly rate');
+        await expectStoredOffering(initialOffering);
+      },
+    );
+
+    it.each([
+      { label: 'a zero rate without pricingType', body: { hourlyRate: 0 }, field: 'hourlyRate' },
+      {
+        label: 'a negative rate without pricingType',
+        body: { hourlyRate: -1 },
+        field: 'hourlyRate',
+      },
+      {
+        label: 'a string rate without pricingType',
+        body: { hourlyRate: '42' },
+        field: 'hourlyRate',
+      },
+      {
+        label: 'a zero rate with HOURLY',
+        body: { pricingType: ServicePricingType.HOURLY, hourlyRate: 0 },
+        field: 'hourlyRate',
+      },
+      { label: 'an unknown pricing type', body: { pricingType: 'FIXED' }, field: 'pricingType' },
+      { label: 'a null pricing type', body: { pricingType: null }, field: 'pricingType' },
+      { label: 'an empty title', body: { title: '' }, field: 'title' },
+      { label: 'a null title', body: { title: null }, field: 'title' },
+      { label: 'a non-string title', body: { title: 42 }, field: 'title' },
+      { label: 'an empty description', body: { description: '' }, field: 'description' },
+      { label: 'a null description', body: { description: null }, field: 'description' },
+      { label: 'a non-string description', body: { description: 42 }, field: 'description' },
+      { label: 'an injected offering id', body: { id: 999 }, field: 'id' },
+      {
+        label: 'an injected provider id',
+        body: { serviceProviderId: 2 },
+        field: 'serviceProviderId',
+      },
+      { label: 'an injected owner id', body: { ownerUserId: 999 }, field: 'ownerUserId' },
+    ])(
+      '/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should reject $label without changing stored data',
+      async ({ body, field }) => {
+        const response = await patchOffering(body).expect(400);
+        expect(response.body.message).toEqual(
+          expect.arrayContaining([expect.stringContaining(field)]),
+        );
+        await expectStoredOffering();
+      },
+    );
+
+    it.each(['missing', 'invalid', 'expired'])(
+      '/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should reject a %s bearer token without changing the offering',
+      async (tokenKind) => {
+        const pendingRequest = request(app.getHttpServer())
+          .patch(`/service-providers/${providerId}/service-offerings/${originalOffering.id}`)
+          .send({ title: 'Modification interdite' });
+        if (tokenKind === 'invalid') pendingRequest.set('Authorization', 'Bearer invalid-token');
+        if (tokenKind === 'expired') {
+          const token = await app.get(JwtService).signAsync({ sub: 1 }, { expiresIn: -1 });
+          pendingRequest.set('Authorization', `Bearer ${token}`);
+        }
+        await pendingRequest.expect(401);
+        await expectStoredOffering();
+      },
+    );
+
+    it('/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should forbid another user from modifying the offering', async () => {
+      const otherToken = await getAccessToken('other-user@example.com');
+      await request(app.getHttpServer())
+        .patch(`/service-providers/${providerId}/service-offerings/${originalOffering.id}`)
+        .set('Authorization', `Bearer ${otherToken}`)
+        .send({ title: 'Modification interdite' })
+        .expect(403);
+      await expectStoredOffering();
+    });
+
+    it('/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should forbid modifying an offering on an ownerless provider', async () => {
+      const legacyOffering = await offeringsRepository.save(
+        offeringsRepository.create({
+          title: 'Offre historique',
+          description: 'Prestation gratuite.',
+          pricingType: ServicePricingType.FREE,
+          hourlyRate: null,
+          serviceProviderId: 1,
+        }),
+      );
+      await request(app.getHttpServer())
+        .patch(`/service-providers/1/service-offerings/${legacyOffering.id}`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ title: 'Modification interdite' })
+        .expect(403);
+      expect(await offeringsRepository.findOneByOrFail({ id: legacyOffering.id })).toEqual(
+        legacyOffering,
+      );
+    });
+
+    it('/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should return 404 when the offering belongs to a different provider', async () => {
+      const otherOffering = await offeringsRepository.save(
+        offeringsRepository.create({
+          title: 'Autre offre',
+          description: 'Prestation gratuite.',
+          pricingType: ServicePricingType.FREE,
+          hourlyRate: null,
+          serviceProviderId: 2,
+        }),
+      );
+      await request(app.getHttpServer())
+        .patch(`/service-providers/${providerId}/service-offerings/${otherOffering.id}`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ title: 'Modification interdite' })
+        .expect(404);
+      expect(await offeringsRepository.findOneByOrFail({ id: otherOffering.id })).toEqual(
+        otherOffering,
+      );
+      await expectStoredOffering();
+    });
+
+    it.each([
+      { label: 'a missing offering', provider: 'owned', offering: '999' },
+      { label: 'a missing provider', provider: '999', offering: 'existing' },
+    ])(
+      '/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should return 404 for $label',
+      async ({ provider, offering }) => {
+        const targetProvider = provider === 'owned' ? providerId : provider;
+        const targetOffering = offering === 'existing' ? originalOffering.id : offering;
+        await request(app.getHttpServer())
+          .patch(`/service-providers/${targetProvider}/service-offerings/${targetOffering}`)
+          .set('Authorization', `Bearer ${ownerToken}`)
+          .send({ title: 'Nouveau titre' })
+          .expect(404);
+        await expectStoredOffering();
+      },
+    );
+
+    it.each([
+      { label: 'an invalid provider id', provider: 'invalid', offering: 'existing' },
+      { label: 'an invalid offering id', provider: 'owned', offering: 'invalid' },
+    ])(
+      '/service-providers/:serviceProviderId/service-offerings/:id (PATCH) should return 400 for $label',
+      async ({ provider, offering }) => {
+        const targetProvider = provider === 'owned' ? providerId : provider;
+        const targetOffering = offering === 'existing' ? originalOffering.id : offering;
+        await request(app.getHttpServer())
+          .patch(`/service-providers/${targetProvider}/service-offerings/${targetOffering}`)
+          .set('Authorization', `Bearer ${ownerToken}`)
+          .send({ title: 'Nouveau titre' })
+          .expect(400);
+        await expectStoredOffering();
+      },
+    );
   });
 
   afterEach(async () => {

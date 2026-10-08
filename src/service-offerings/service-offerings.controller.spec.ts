@@ -4,6 +4,7 @@ import { ServiceOfferingService } from './service-offering.service.js';
 import { ServiceOffering } from './service-offering.entity.js';
 import { ServicePricingType } from './service-pricing-type.enum.js';
 import type { CreateServiceOfferingDto } from './dto/create-service-offering.dto.js';
+import type { UpdateServiceOfferingDto } from './dto/update-service-offering.dto.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import type { Request } from 'express';
 
@@ -12,6 +13,7 @@ describe('ServiceOfferingsController', () => {
   const serviceOfferingServiceMock = {
     findAllForServiceProvider: vi.fn(),
     create: vi.fn(),
+    update: vi.fn(),
   };
 
   beforeEach(async () => {
@@ -84,6 +86,27 @@ describe('ServiceOfferingsController', () => {
         requestMock.user.id,
       );
       expect(result).toBe(expectedServiceOffering);
+    });
+  });
+
+  describe('update', () => {
+    it('should pass both route ids, the partial DTO and authenticated user id to the service', async () => {
+      const update: UpdateServiceOfferingDto = { title: 'Nouveau titre' };
+      const expectedOffering = Object.assign(new ServiceOffering(), {
+        id: 12,
+        serviceProviderId: 1,
+        ...update,
+        description: 'Description existante',
+        pricingType: ServicePricingType.HOURLY,
+        hourlyRate: 35,
+      });
+      const requestMock = { user: { id: 7 } } as Request & { user: { id: number } };
+      serviceOfferingServiceMock.update.mockResolvedValue(expectedOffering);
+
+      const result = await controller.update(1, 12, update, requestMock);
+
+      expect(serviceOfferingServiceMock.update).toHaveBeenCalledExactlyOnceWith(1, 12, update, 7);
+      expect(result).toBe(expectedOffering);
     });
   });
 });

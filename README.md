@@ -22,14 +22,14 @@ service.
 - Unit and end-to-end tests
 - GitHub Actions workflow for automated checks
 - Authentication and user accounts
-- One provider profile per account, with owner-only updates, deletion and offering creation
+- One provider profile per account, with owner-only profile management and offering creation and updates
 
 ## Project status
 
 The application is under active development.
 User registration, login and a protected profile endpoint are available.
 Provider ownership and authorization are implemented for profile updates,
-deletion and service offering creation. Service requests are planned.
+deletion, and service offering creation and updates. Service requests are planned.
 The current version is intended for local development and demonstration.
 
 ## Requirements
@@ -71,6 +71,17 @@ Service offering endpoints:
 
 - `GET /service-providers/:serviceProviderId/service-offerings` lists a provider's offerings.
 - `POST /service-providers/:serviceProviderId/service-offerings` creates an offering.
+- `PATCH /service-providers/:serviceProviderId/service-offerings/:id` partially updates an offering.
+
+Offering creation and updates require ownership of the provider profile.
+When updating an offering:
+
+- Changing from `HOURLY` to `FREE` clears the hourly rate to `null` when no rate is supplied.
+- Changing from `FREE` to `HOURLY` requires a strictly positive hourly rate.
+- Omitted fields keep their existing values, except for the rate when changing to `FREE`.
+- An explicit `null` rate is allowed for `FREE`, but rejected for `HOURLY`.
+- A non-null rate is rejected for `FREE`; supplied numeric rates must be strictly positive.
+- An offering not found under the specified provider returns `404 Not Found`.
 
 Service providers can be created through Swagger UI with a valid access token.
 The Angular frontend sends access tokens with authenticated API requests.
@@ -90,6 +101,7 @@ The following operations require a valid access token:
 - `PATCH /service-providers/:id`
 - `DELETE /service-providers/:id`
 - `POST /service-providers/:serviceProviderId/service-offerings`
+- `PATCH /service-providers/:serviceProviderId/service-offerings/:id`
 - `POST /service-providers/:serviceProviderId/reviews`
 
 Provider, offering and review consultation endpoints remain public.
@@ -101,14 +113,14 @@ its owner from the verified access token and uses the account's first and last
 names when creating the profile. A client-supplied `ownerUserId` is rejected.
 A second profile creation for the same account returns `409 Conflict`.
 
-Only the profile owner can update or delete it, or add service offerings to it.
+Only the profile owner can update or delete it, or create and update its service offerings.
 Attempts by another authenticated user return `403 Forbidden`.
 Review creation currently remains available to authenticated users; linking
 reviews to completed service requests is planned.
 
 Existing and demo profiles have no owner (`ownerUserId: null`). They remain
 publicly readable, but authenticated users cannot update or delete them, or
-add offerings to them. The ownership migration preserves existing profiles,
+create or update offerings on them. The ownership migration preserves existing profiles,
 reviews and offerings.
 
 When reverting `AddServiceProviderOwner`, use `--transaction none` to preserve
