@@ -15,6 +15,7 @@ describe('ServiceOfferingService', () => {
     save: vi.fn(),
     find: vi.fn(),
     findOneBy: vi.fn(),
+    remove: vi.fn(),
   };
   const serviceProvidersServiceMock = {
     findOne: vi.fn(),
@@ -25,6 +26,7 @@ describe('ServiceOfferingService', () => {
     vi.clearAllMocks();
     serviceProvidersServiceMock.findOneOwnedByOrFail.mockReset();
     repositoryMock.findOneBy.mockReset();
+    repositoryMock.remove.mockReset();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -234,6 +236,70 @@ describe('ServiceOfferingService', () => {
 
     await expect(service.findAllForServiceProvider(serviceProviderId)).rejects.toBe(error);
     expect(repositoryMock.find).not.toHaveBeenCalled();
+  });
+
+  describe('remove', () => {
+    const offering = Object.assign(new ServiceOffering(), {
+      id: 12,
+      serviceProviderId: 1,
+      title: 'Conseil plomberie',
+      description: 'Conseils pour votre installation.',
+      pricingType: ServicePricingType.FREE,
+      hourlyRate: null,
+    });
+
+    beforeEach(() => {
+      serviceProvidersServiceMock.findOneOwnedByOrFail.mockResolvedValue({ id: 1, ownerUserId: 7 });
+      repositoryMock.findOneBy.mockResolvedValue(offering);
+      repositoryMock.remove.mockResolvedValue(offering);
+    });
+
+    it('should delete the offering from the owned provider and return no value', async () => {
+      const result = await service.remove(1, 12, 7);
+
+      expect(serviceProvidersServiceMock.findOneOwnedByOrFail).toHaveBeenCalledExactlyOnceWith(
+        1,
+        7,
+      );
+      expect(repositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({
+        id: 12,
+        serviceProviderId: 1,
+      });
+      expect(repositoryMock.remove).toHaveBeenCalledExactlyOnceWith(offering);
+      expect(result).toBeUndefined();
+    });
+
+    it.each([
+      new ForbiddenException('You do not own this service provider profile'),
+      new NotFoundException('Service provider not found'),
+    ])(
+      'should not look up or delete an offering when the provider check rejects with $name',
+      async (error) => {
+        serviceProvidersServiceMock.findOneOwnedByOrFail.mockRejectedValue(error);
+
+        await expect(service.remove(1, 12, 7)).rejects.toBe(error);
+        expect(repositoryMock.findOneBy).not.toHaveBeenCalled();
+        expect(repositoryMock.remove).not.toHaveBeenCalled();
+      },
+    );
+
+    it('should not delete an offering missing from the specified provider', async () => {
+      repositoryMock.findOneBy.mockResolvedValue(null);
+
+      await expect(service.remove(1, 12, 7)).rejects.toThrow(NotFoundException);
+      expect(repositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({
+        id: 12,
+        serviceProviderId: 1,
+      });
+      expect(repositoryMock.remove).not.toHaveBeenCalled();
+    });
+
+    it('should propagate a deletion failure', async () => {
+      const error = new Error('Database unavailable');
+      repositoryMock.remove.mockRejectedValue(error);
+
+      await expect(service.remove(1, 12, 7)).rejects.toBe(error);
+    });
   });
 
   describe('update', () => {

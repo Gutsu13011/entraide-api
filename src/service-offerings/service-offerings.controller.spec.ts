@@ -14,10 +14,12 @@ describe('ServiceOfferingsController', () => {
     findAllForServiceProvider: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
+    remove: vi.fn(),
   };
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    serviceOfferingServiceMock.remove.mockReset();
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ServiceOfferingsController],
       providers: [{ provide: ServiceOfferingService, useValue: serviceOfferingServiceMock }],
@@ -86,6 +88,18 @@ describe('ServiceOfferingsController', () => {
         requestMock.user.id,
       );
       expect(result).toBe(expectedServiceOffering);
+    });
+  });
+
+  describe('remove', () => {
+    it('should pass both route ids and the authenticated user id to the service', async () => {
+      const requestMock = { user: { id: 7 } } as Request & { user: { id: number } };
+      serviceOfferingServiceMock.remove.mockResolvedValue(undefined);
+
+      const result = await controller.remove(1, 12, requestMock);
+
+      expect(serviceOfferingServiceMock.remove).toHaveBeenCalledExactlyOnceWith(1, 12, 7);
+      expect(result).toBeUndefined();
     });
   });
 

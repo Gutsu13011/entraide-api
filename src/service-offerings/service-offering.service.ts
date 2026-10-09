@@ -86,6 +86,14 @@ export class ServiceOfferingService {
     return this.serviceOfferingsRepository.save(updateOffering);
   }
 
+  async remove(serviceProviderId: number, id: number, userId: number): Promise<void> {
+    await this.serviceProvidersService.findOneOwnedByOrFail(serviceProviderId, userId);
+
+    const serviceOffering = await this.findOneOrFail(serviceProviderId, id);
+
+    await this.serviceOfferingsRepository.remove(serviceOffering);
+  }
+
   async findAllForServiceProvider(serviceProviderId: number): Promise<ServiceOffering[]> {
     await this.serviceProvidersService.findOne(serviceProviderId);
 

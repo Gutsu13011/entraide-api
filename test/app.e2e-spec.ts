@@ -1236,7 +1236,7 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  describe('service offering updates', () => {
+  describe('service offering updates and deletion', () => {
     let ownerToken: string;
     let providerId: number;
     let originalOffering: ServiceOffering;
@@ -1534,6 +1534,112 @@ describe('AppController (e2e)', () => {
           .set('Authorization', `Bearer ${ownerToken}`)
           .send({ title: 'Nouveau titre' })
           .expect(400);
+        await expectStoredOffering();
+      },
+    );
+
+    it('/service-providers/:serviceProviderId/service-offerings/:id (DELETE) should delete only the selected offering and return no content', async () => {
+      const sibling = await offeringsRepository.save(
+        offeringsRepository.create({
+          title: 'Conseil gratuit',
+          description: 'Une autre prestation à conserver.',
+          pricingType: ServicePricingType.FREE,
+          hourlyRate: null,
+          serviceProviderId: providerId,
+        }),
+      );
+      const providerBefore = await request(app.getHttpServer())
+        .get(`/service-providers/${providerId}`)
+        .expect(200);
+
+      const response = await request(app.getHttpServer())
+        .delete(`/service-providers/${providerId}/service-offerings/${originalOffering.id}`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(204);
+
+      expect(response.text).toBe('');
+      expect(await offeringsRepository.findOneBy({ id: originalOffering.id })).toBeNull();
+      expect(await offeringsRepository.findOneByOrFail({ id: sibling.id })).toEqual(sibling);
+      const list = await request(app.getHttpServer())
+        .get(`/service-providers/${providerId}/service-offerings`)
+        .expect(200);
+      expect(list.body).toEqual([sibling]);
+      const providerAfter = await request(app.getHttpServer())
+        .get(`/service-providers/${providerId}`)
+        .expect(200);
+      expect(providerAfter.body).toEqual(providerBefore.body);
+    });
+
+    it.each(['missing', 'invalid', 'expired'])(
+      '/service-providers/:serviceProviderId/service-offerings/:id (DELETE) should reject a %s bearer token without deleting the offering',
+      async (tokenKind) => {
+        const pendingRequest = request(app.getHttpServer()).delete(
+          `/service-providers/${providerId}/service-offerings/${originalOffering.id}`,
+        );
+        if (tokenKind === 'invalid') pendingRequest.set('Authorization', 'Bearer invalid-token');
+        if (tokenKind === 'expired') {
+          const token = await app.get(JwtService).signAsync({ sub: '1' }, { expiresIn: -1 });
+          pendingRequest.set('Authorization', `Bearer ${token}`);
+        }
+        await pendingRequest.expect(401);
+        await expectStoredOffering();
+      },
+    );
+
+    it('/service-providers/:serviceProviderId/service-offerings/:id (DELETE) should forbid another user from deleting the offering', async () => {
+      const otherToken = await getAccessToken('other-user@example.com');
+      await request(app.getHttpServer())
+        .delete(`/service-providers/${providerId}/service-offerings/${originalOffering.id}`)
+        .set('Authorization', `Bearer ${otherToken}`)
+        .expect(403);
+      await expectStoredOffering();
+    });
+
+    it.each([
+      { label: 'an offering on an ownerless provider', targetProvider: 'ownerless', status: 403 },
+      {
+        label: 'an offering belonging to a different provider',
+        targetProvider: 'owned',
+        status: 404,
+      },
+    ])(
+      '/service-providers/:serviceProviderId/service-offerings/:id (DELETE) should reject deleting $label',
+      async ({ targetProvider, status }) => {
+        const foreignOffering = await offeringsRepository.save(
+          offeringsRepository.create({
+            title: 'Offre historique',
+            description: 'Prestation gratuite.',
+            pricingType: ServicePricingType.FREE,
+            hourlyRate: null,
+            serviceProviderId: 1,
+          }),
+        );
+        const targetId = targetProvider === 'owned' ? providerId : 1;
+        await request(app.getHttpServer())
+          .delete(`/service-providers/${targetId}/service-offerings/${foreignOffering.id}`)
+          .set('Authorization', `Bearer ${ownerToken}`)
+          .expect(status);
+        expect(await offeringsRepository.findOneByOrFail({ id: foreignOffering.id })).toEqual(
+          foreignOffering,
+        );
+        await expectStoredOffering();
+      },
+    );
+
+    it.each([
+      { label: 'a missing provider', provider: '999', offering: 'existing', status: 404 },
+      { label: 'a missing offering', provider: 'owned', offering: '999', status: 404 },
+      { label: 'an invalid provider id', provider: 'invalid', offering: 'existing', status: 400 },
+      { label: 'an invalid offering id', provider: 'owned', offering: 'invalid', status: 400 },
+    ])(
+      '/service-providers/:serviceProviderId/service-offerings/:id (DELETE) should reject $label',
+      async ({ provider, offering, status }) => {
+        const targetProvider = provider === 'owned' ? providerId : provider;
+        const targetOffering = offering === 'existing' ? originalOffering.id : offering;
+        await request(app.getHttpServer())
+          .delete(`/service-providers/${targetProvider}/service-offerings/${targetOffering}`)
+          .set('Authorization', `Bearer ${ownerToken}`)
+          .expect(status);
         await expectStoredOffering();
       },
     );

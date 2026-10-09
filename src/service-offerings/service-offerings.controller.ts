@@ -1,7 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseIntPipe,
   Patch,
@@ -14,6 +17,7 @@ import {
   ApiBearerAuth,
   ApiCreatedResponse,
   ApiForbiddenResponse,
+  ApiNoContentResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -97,5 +101,29 @@ export class ServiceOfferingsController {
       updateServiceOfferingDto,
       request.user.id,
     );
+  }
+
+  @ApiOperation({ summary: 'Delete a service offering for a service provider' })
+  @ApiNoContentResponse({ description: 'Service offering successfully deleted' })
+  @ApiBadRequestResponse({ description: 'The identifiers must be integers' })
+  @ApiNotFoundResponse({
+    description: 'Service provider not found or offering not found for this provider',
+  })
+  @ApiBearerAuth()
+  @ApiUnauthorizedResponse({
+    description: 'Missing, invalid or expired access token',
+  })
+  @ApiForbiddenResponse({
+    description: 'The authenticated user does not own this service provider profile',
+  })
+  @UseGuards(JwtAuthGuard)
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  remove(
+    @Param('serviceProviderId', ParseIntPipe) serviceProviderId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Req() request: Request & { user: { id: number } },
+  ): Promise<void> {
+    return this.serviceOfferingService.remove(serviceProviderId, id, request.user.id);
   }
 }
