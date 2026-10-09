@@ -11,6 +11,8 @@ import { User } from '../src/users/user.entity.js';
 import { UsersService } from '../src/users/users.service.js';
 import argon2 from 'argon2';
 import { JwtService } from '@nestjs/jwt';
+import { ServiceRequest } from '../src/service-requests/service-request.entity.js';
+import { ServiceRequestStatus } from '../src/service-requests/service-request-status.enum.js';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
@@ -1641,6 +1643,377 @@ describe('AppController (e2e)', () => {
           .set('Authorization', `Bearer ${ownerToken}`)
           .expect(status);
         await expectStoredOffering();
+      },
+    );
+  });
+
+  describe('service request creation', () => {
+    const route =
+      '/service-providers/:serviceProviderId/service-offerings/:serviceOfferingId/service-requests';
+    const message = 'Bonjour, je souhaite repeindre ma chambre.';
+    let ownerToken: string;
+    let requesterToken: string;
+    let ownerId: number;
+    let requesterId: number;
+    let providerId: number;
+    let offering: ServiceOffering;
+    let requestsRepository: Repository<ServiceRequest>;
+    let offeringsRepository: Repository<ServiceOffering>;
+
+    beforeEach(async () => {
+      ownerToken = await getAccessToken('owner@example.com');
+      requesterToken = await getAccessToken('requester@example.com');
+      const usersService = app.get(UsersService);
+      ownerId = (await usersService.findByEmail('owner@example.com'))!.id;
+      requesterId = (await usersService.findByEmail('requester@example.com'))!.id;
+      const providerResponse = await request(app.getHttpServer())
+        .post('/service-providers')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({
+          firstName: 'Alice',
+          lastName: 'Martin',
+          profession: 'Peintre',
+          city: 'Paris',
+          description: 'Peinture intérieure.',
+          hourlyRate: 35,
+          available: true,
+          imageUrl: '',
+        })
+        .expect(201);
+      providerId = providerResponse.body.id;
+      const offeringResponse = await request(app.getHttpServer())
+        .post(`/service-providers/${providerId}/service-offerings`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({
+          title: 'Peinture',
+          description: 'Peinture intérieure.',
+          pricingType: ServicePricingType.HOURLY,
+          hourlyRate: 35,
+        })
+        .expect(201);
+      offering = offeringResponse.body;
+      requestsRepository = app.get<Repository<ServiceRequest>>(getRepositoryToken(ServiceRequest));
+      offeringsRepository = app.get<Repository<ServiceOffering>>(
+        getRepositoryToken(ServiceOffering),
+      );
+    });
+
+    function url(provider: number | string = providerId, offer: number | string = offering.id) {
+      return `/service-providers/${provider}/service-offerings/${offer}/service-requests`;
+    }
+
+    function sendRequest(body: object = { message }) {
+      return request(app.getHttpServer())
+        .post(url())
+        .set('Authorization', `Bearer ${requesterToken}`)
+        .send(body);
+    }
+
+    async function expectNoRequest() {
+      expect(await requestsRepository.count()).toBe(0);
+    }
+
+    it.each([
+      { pricingType: ServicePricingType.HOURLY, hourlyRate: 35 },
+      { pricingType: ServicePricingType.FREE, hourlyRate: null },
+    ])(
+      `${route} (POST) should persist a SENT request with a $pricingType snapshot`,
+      async (pricing) => {
+        await offeringsRepository.update(offering.id, pricing);
+
+        const response = await sendRequest().expect(201);
+
+        expect(response.body).toEqual({
+          id: expect.any(Number),
+          message,
+          status: ServiceRequestStatus.SENT,
+          createdAt: expect.any(String),
+          requesterUserId: requesterId,
+          recipientUserId: ownerId,
+          serviceOfferingId: offering.id,
+          offeringTitleSnapshot: offering.title,
+          offeringPricingTypeSnapshot: pricing.pricingType,
+          offeringHourlyRateSnapshot: pricing.hourlyRate,
+        });
+        expect(Number.isNaN(Date.parse(response.body.createdAt))).toBe(false);
+        const stored = await requestsRepository.findOneByOrFail({ id: response.body.id });
+        expect(stored).toEqual({ ...response.body, createdAt: new Date(response.body.createdAt) });
+        expect(await requestsRepository.count()).toBe(1);
+      },
+    );
+
+    it.each(['missing', 'invalid', 'expired'])(
+      `${route} (POST) should reject a %s bearer token without creating a request`,
+      async (kind) => {
+        const pending = request(app.getHttpServer()).post(url()).send({ message });
+        if (kind === 'invalid') pending.set('Authorization', 'Bearer invalid-token');
+        if (kind === 'expired') {
+          const token = await app
+            .get(JwtService)
+            .signAsync({ sub: String(requesterId) }, { expiresIn: -1 });
+          pending.set('Authorization', `Bearer ${token}`);
+        }
+
+        await pending.expect(401);
+        await expectNoRequest();
+      },
+    );
+
+    it.each([
+      { label: 'a missing message', body: {} },
+      { label: 'a null message', body: { message: null } },
+      { label: 'a numeric message', body: { message: 42 } },
+      { label: 'an empty message', body: { message: '' } },
+      { label: 'spaces only', body: { message: '   ' } },
+      { label: 'line breaks and tabs only', body: { message: '\n\t' } },
+    ])(`${route} (POST) should reject $label without creating a request`, async ({ body }) => {
+      await sendRequest(body).expect(400);
+      await expectNoRequest();
+    });
+
+    it(`${route} (POST) should reject client-supplied identities, snapshots and status`, async () => {
+      const response = await sendRequest({
+        message,
+        requesterUserId: ownerId,
+        recipientUserId: requesterId,
+        serviceOfferingId: 999,
+        offeringTitleSnapshot: 'Faux titre',
+        offeringPricingTypeSnapshot: ServicePricingType.FREE,
+        offeringHourlyRateSnapshot: 1,
+        status: 'ACCEPTED',
+      }).expect(400);
+
+      expect(response.body.message).toEqual(
+        expect.arrayContaining([
+          'property requesterUserId should not exist',
+          'property recipientUserId should not exist',
+          'property serviceOfferingId should not exist',
+          'property offeringTitleSnapshot should not exist',
+          'property offeringPricingTypeSnapshot should not exist',
+          'property offeringHourlyRateSnapshot should not exist',
+          'property status should not exist',
+        ]),
+      );
+      await expectNoRequest();
+    });
+
+    it.each([
+      { label: 'a missing provider', provider: '999', offer: 'existing', status: 404 },
+      { label: 'a missing offering', provider: 'owned', offer: '999', status: 404 },
+      { label: 'an invalid provider id', provider: 'invalid', offer: 'existing', status: 400 },
+      { label: 'an invalid offering id', provider: 'owned', offer: 'invalid', status: 400 },
+      {
+        label: 'an offering belonging to a different provider',
+        provider: '1',
+        offer: 'existing',
+        status: 404,
+      },
+    ])(
+      `${route} (POST) should reject $label without creating a request`,
+      async ({ provider, offer, status }) => {
+        await request(app.getHttpServer())
+          .post(
+            url(
+              provider === 'owned' ? providerId : provider,
+              offer === 'existing' ? offering.id : offer,
+            ),
+          )
+          .set('Authorization', `Bearer ${requesterToken}`)
+          .send({ message })
+          .expect(status);
+        await expectNoRequest();
+      },
+    );
+
+    it(`${route} (POST) should reject an offering on a provider without an owner`, async () => {
+      const legacyOffering = await offeringsRepository.save(
+        offeringsRepository.create({
+          title: 'Conseil',
+          description: 'Conseil gratuit.',
+          pricingType: ServicePricingType.FREE,
+          hourlyRate: null,
+          serviceProviderId: 1,
+        }),
+      );
+
+      const response = await request(app.getHttpServer())
+        .post(url(1, legacyOffering.id))
+        .set('Authorization', `Bearer ${requesterToken}`)
+        .send({ message })
+        .expect(409);
+
+      expect(response.body.message).toBe('This service provider profile has no owner');
+      await expectNoRequest();
+    });
+
+    it.each([
+      { label: 'changing the hourly rate', update: { title: 'Nouveau titre', hourlyRate: 50 } },
+      {
+        label: 'changing to free',
+        update: { title: 'Nouveau titre', pricingType: ServicePricingType.FREE },
+      },
+    ])(`${route} (POST) should preserve the original snapshot after $label`, async ({ update }) => {
+      const response = await sendRequest().expect(201);
+      const before = await requestsRepository.findOneByOrFail({ id: response.body.id });
+
+      await request(app.getHttpServer())
+        .patch(`/service-providers/${providerId}/service-offerings/${offering.id}`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send(update)
+        .expect(200);
+
+      expect(await requestsRepository.findOneByOrFail({ id: before.id })).toEqual(before);
+      expect(await offeringsRepository.findOneByOrFail({ id: offering.id })).toMatchObject(update);
+    });
+
+    it.each(['offering', 'provider'])(
+      `${route} (POST) should preserve the request when its %s is later deleted`,
+      async (target) => {
+        const response = await sendRequest().expect(201);
+        const before = await requestsRepository.findOneByOrFail({ id: response.body.id });
+        const deletionUrl =
+          target === 'offering'
+            ? `/service-providers/${providerId}/service-offerings/${offering.id}`
+            : `/service-providers/${providerId}`;
+
+        await request(app.getHttpServer())
+          .delete(deletionUrl)
+          .set('Authorization', `Bearer ${ownerToken}`)
+          .expect(204);
+
+        expect(await offeringsRepository.findOneBy({ id: offering.id })).toBeNull();
+        expect(await requestsRepository.findOneByOrFail({ id: before.id })).toEqual({
+          ...before,
+          serviceOfferingId: null,
+        });
+        expect(await app.get(UsersService).findById(ownerId)).not.toBeNull();
+      },
+    );
+  });
+
+  describe('service request consultation', () => {
+    let tokenA: string;
+    let tokenB: string;
+    let userA: number;
+    let userB: number;
+    let repository: Repository<ServiceRequest>;
+    let rows: ServiceRequest[];
+
+    beforeEach(async () => {
+      tokenA = await getAccessToken('a@example.com');
+      tokenB = await getAccessToken('b@example.com');
+      await getAccessToken('c@example.com');
+      const users = app.get(UsersService);
+      userA = (await users.findByEmail('a@example.com'))!.id;
+      userB = (await users.findByEmail('b@example.com'))!.id;
+      const userC = (await users.findByEmail('c@example.com'))!.id;
+      repository = app.get<Repository<ServiceRequest>>(getRepositoryToken(ServiceRequest));
+      const old = new Date('2026-01-01T10:00:00Z');
+      const recent = new Date('2026-01-02T10:00:00Z');
+      rows = await repository.save(
+        [
+          { from: userA, to: userB, at: old },
+          { from: userA, to: userC, at: recent },
+          { from: userA, to: userB, at: recent },
+          { from: userB, to: userA, at: old },
+          { from: userC, to: userA, at: recent },
+          { from: userB, to: userA, at: recent },
+          { from: userB, to: userC, at: new Date('2026-01-03T10:00:00Z') },
+        ].map(({ from, to, at }, index) =>
+          repository.create({
+            message: `Message privé ${index}`,
+            requesterUserId: from,
+            recipientUserId: to,
+            serviceOfferingId: null,
+            offeringTitleSnapshot: 'Conseil historique',
+            offeringPricingTypeSnapshot: ServicePricingType.FREE,
+            offeringHourlyRateSnapshot: null,
+            createdAt: at,
+          }),
+        ),
+      );
+    });
+
+    function asJson(selected: ServiceRequest[]) {
+      return selected.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }));
+    }
+
+    it.each(['sent', 'received'] as const)(
+      '/service-requests/%s (GET) should isolate accounts and sort by date then id descending',
+      async (direction) => {
+        const expectedA =
+          direction === 'sent' ? [rows[2], rows[1], rows[0]] : [rows[5], rows[4], rows[3]];
+        const expectedB = direction === 'sent' ? [rows[6], rows[5], rows[3]] : [rows[2], rows[0]];
+
+        const responseA = await request(app.getHttpServer())
+          .get(`/service-requests/${direction}`)
+          .set('Authorization', `Bearer ${tokenA}`)
+          .expect(200);
+        const responseB = await request(app.getHttpServer())
+          .get(`/service-requests/${direction}`)
+          .set('Authorization', `Bearer ${tokenB}`)
+          .expect(200);
+
+        expect(responseA.body).toEqual(asJson(expectedA));
+        expect(responseB.body).toEqual(asJson(expectedB));
+        expect(await repository.count()).toBe(7);
+      },
+    );
+
+    it.each(['sent', 'received'] as const)(
+      '/service-requests/%s (GET) should return an empty list for an account without requests',
+      async (direction) => {
+        const emptyToken = await getAccessToken('empty@example.com');
+
+        const response = await request(app.getHttpServer())
+          .get(`/service-requests/${direction}`)
+          .set('Authorization', `Bearer ${emptyToken}`)
+          .expect(200);
+
+        expect(response.body).toEqual([]);
+      },
+    );
+
+    it.each(['sent', 'received'] as const)(
+      '/service-requests/%s (GET) should ignore client-supplied account filters',
+      async (direction) => {
+        const expected =
+          direction === 'sent' ? [rows[2], rows[1], rows[0]] : [rows[5], rows[4], rows[3]];
+
+        const response = await request(app.getHttpServer())
+          .get(`/service-requests/${direction}`)
+          .query({ userId: userB, requesterUserId: userB, recipientUserId: userB })
+          .set('Authorization', `Bearer ${tokenA}`)
+          .expect(200);
+
+        expect(response.body).toEqual(asJson(expected));
+      },
+    );
+
+    it.each([
+      { direction: 'sent', kind: 'missing' },
+      { direction: 'sent', kind: 'invalid' },
+      { direction: 'sent', kind: 'expired' },
+      { direction: 'received', kind: 'missing' },
+      { direction: 'received', kind: 'invalid' },
+      { direction: 'received', kind: 'expired' },
+    ])(
+      '/service-requests/$direction (GET) should reject a $kind bearer token',
+      async ({ direction, kind }) => {
+        const pending = request(app.getHttpServer()).get(`/service-requests/${direction}`);
+        if (kind === 'invalid') pending.set('Authorization', 'Bearer invalid-token');
+        if (kind === 'expired') {
+          const expired = await app
+            .get(JwtService)
+            .signAsync({ sub: String(userA) }, { expiresIn: -1 });
+          pending.set('Authorization', `Bearer ${expired}`);
+        }
+
+        const response = await pending.expect(401);
+
+        expect(response.body.statusCode).toBe(401);
+        expect(response.body).not.toHaveProperty('data');
+        expect(await repository.count()).toBe(7);
       },
     );
   });

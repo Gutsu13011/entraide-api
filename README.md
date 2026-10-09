@@ -16,6 +16,7 @@ service.
 - Pagination, search, filtering and sorting
 - Provider reviews
 - Multiple service offerings per provider, with free or hourly pricing
+- Authenticated service requests with private sent and received lists and historical offering snapshots
 - SQLite persistence with TypeORM migrations
 - Request validation and interactive Swagger documentation
 - Health checks and request logging
@@ -29,7 +30,9 @@ service.
 The application is under active development.
 User registration, login and a protected profile endpoint are available.
 Provider ownership and authorization are implemented for profile updates,
-deletion, and service offering creation, updates and deletion. Service requests are planned.
+deletion, and service offering creation, updates and deletion. Service request
+creation and private sent and received lists are available. Requests currently
+use the initial `SENT` status; responses and status transitions are planned.
 The current version is intended for local development and demonstration.
 
 ## Requirements
@@ -108,6 +111,9 @@ The following operations require a valid access token:
 - `PATCH /service-providers/:serviceProviderId/service-offerings/:id`
 - `DELETE /service-providers/:serviceProviderId/service-offerings/:id`
 - `POST /service-providers/:serviceProviderId/reviews`
+- `POST /service-providers/:serviceProviderId/service-offerings/:serviceOfferingId/service-requests`
+- `GET /service-requests/sent`
+- `GET /service-requests/received`
 
 Provider, offering and review consultation endpoints remain public.
 
@@ -134,6 +140,45 @@ related data. If it is the latest applied migration, run:
 ```bash
 npm run migration:revert -- --transaction none
 ```
+
+## Service requests
+
+All service request endpoints require a valid access token:
+
+- `POST /service-providers/:serviceProviderId/service-offerings/:serviceOfferingId/service-requests`
+  sends a request for an offering and returns `201 Created`.
+- `GET /service-requests/sent` lists requests sent by the authenticated account.
+- `GET /service-requests/received` lists requests addressed to the authenticated account.
+
+The creation body contains only the message:
+
+```json
+{
+  "message": "Bonjour, je souhaiterais faire repeindre ma chambre."
+}
+```
+
+The message must be a string containing at least one non-whitespace character.
+Additional body fields are rejected. The API derives the requester from the
+verified token and the recipient from the provider profile's owner. It copies
+the offering's title, pricing type and hourly rate into the request and sets
+its initial status to `SENT`.
+
+The offering must belong to the provider specified in the URL. A missing
+provider or an offering not found for that provider returns `404 Not Found`.
+An offering on a profile without an owner cannot receive requests and returns
+`409 Conflict`.
+
+Sent and received lists are private, ordered by creation date descending,
+then by id descending when dates match. Accounts with no matching requests
+receive an empty array. Account identifiers supplied in query parameters do
+not override the identity from the token.
+
+Changing an offering's title or pricing leaves existing request snapshots
+unchanged. Deleting the offering, including through provider profile deletion,
+preserves the request and its recipient, and sets `serviceOfferingId` to `null`.
+The snapshot records the offering at the time of the request; sending a request
+does not mean the provider has accepted the work.
 
 ## Demo data
 
@@ -230,5 +275,6 @@ migrations, unit tests and end-to-end tests.
 
 ## Planned improvements
 
-- Service requests and status tracking
+- Service request responses and status transitions
+- Service request forms and sent/received lists in the Angular frontend
 - Reviews linked to completed service requests
