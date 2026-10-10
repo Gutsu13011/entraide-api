@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { ServiceOffering } from '../service-offerings/service-offering.entity.js';
 import { ServiceProvidersService } from '../service-providers/service-providers.service.js';
 import { CreateServiceRequestDto } from './dto/create-service-request.dto.js';
+import { ServiceRequestResponseDto } from './dto/service-request-response.dto.js';
 
 @Injectable()
 export class ServiceRequestsService {
@@ -21,7 +22,7 @@ export class ServiceRequestsService {
     serviceOfferingId: number,
     createServiceRequestDto: CreateServiceRequestDto,
     requesterUserId: number,
-  ): Promise<ServiceRequest> {
+  ): Promise<ServiceRequestResponseDto> {
     const serviceProvider = await this.serviceProvidersService.findOne(serviceProviderId);
     const serviceOffering = await this.serviceOfferingsRepository.findOneBy({
       id: serviceOfferingId,
@@ -45,20 +46,57 @@ export class ServiceRequestsService {
       offeringHourlyRateSnapshot: serviceOffering.hourlyRate,
     });
 
-    return this.serviceRequestsRepository.save(serviceRequest);
+    const savedRequest = await this.serviceRequestsRepository.save(serviceRequest);
+    const requestWithParticipants = await this.serviceRequestsRepository.findOneOrFail({
+      where: { id: savedRequest.id },
+      relations: { requesterUser: true, recipientUser: true },
+    });
+
+    return this.toResponse(requestWithParticipants);
   }
 
-  async findSentByUser(userId: number): Promise<ServiceRequest[]> {
-    return this.serviceRequestsRepository.find({
+  async findSentByUser(userId: number): Promise<ServiceRequestResponseDto[]> {
+    const requests = await this.serviceRequestsRepository.find({
       where: { requesterUserId: userId },
+      relations: { requesterUser: true, recipientUser: true },
       order: { createdAt: 'DESC', id: 'DESC' },
     });
+
+    return requests.map((serviceRequest) => this.toResponse(serviceRequest));
   }
 
-  async findReceivedByUser(userId: number): Promise<ServiceRequest[]> {
-    return this.serviceRequestsRepository.find({
+  async findReceivedByUser(userId: number): Promise<ServiceRequestResponseDto[]> {
+    const requests = await this.serviceRequestsRepository.find({
       where: { recipientUserId: userId },
+      relations: { requesterUser: true, recipientUser: true },
       order: { createdAt: 'DESC', id: 'DESC' },
     });
+
+    return requests.map((serviceRequest) => this.toResponse(serviceRequest));
+  }
+
+  private toResponse(serviceRequest: ServiceRequest): ServiceRequestResponseDto {
+    return {
+      id: serviceRequest.id,
+      message: serviceRequest.message,
+      status: serviceRequest.status,
+      createdAt: serviceRequest.createdAt,
+      requesterUserId: serviceRequest.requesterUserId,
+      recipientUserId: serviceRequest.recipientUserId,
+      serviceOfferingId: serviceRequest.serviceOfferingId,
+      offeringTitleSnapshot: serviceRequest.offeringTitleSnapshot,
+      offeringPricingTypeSnapshot: serviceRequest.offeringPricingTypeSnapshot,
+      offeringHourlyRateSnapshot: serviceRequest.offeringHourlyRateSnapshot,
+      requester: {
+        id: serviceRequest.requesterUser.id,
+        firstName: serviceRequest.requesterUser.firstName,
+        lastName: serviceRequest.requesterUser.lastName,
+      },
+      recipient: {
+        id: serviceRequest.recipientUser.id,
+        firstName: serviceRequest.recipientUser.firstName,
+        lastName: serviceRequest.recipientUser.lastName,
+      },
+    };
   }
 }

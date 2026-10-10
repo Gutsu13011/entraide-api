@@ -3,7 +3,7 @@ import type { Request } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ServiceRequestsController } from './service-requests.controller.js';
 import { ServiceRequestsService } from './service-requests.service.js';
-import { ServiceRequest } from './service-request.entity.js';
+import { ServiceRequestResponseDto } from './dto/service-request-response.dto.js';
 
 describe('ServiceRequestsController', () => {
   it('should pass both route ids, the DTO and authenticated user id to the service', async () => {
@@ -19,7 +19,7 @@ describe('ServiceRequestsController', () => {
       const controller = module.get(ServiceRequestsController);
       const dto = { message: 'Bonjour, je souhaite repeindre ma chambre.' };
       const requestMock = { user: { id: 8 } } as Request & { user: { id: number } };
-      const savedRequest = Object.assign(new ServiceRequest(), { id: 42 });
+      const savedRequest = Object.assign(new ServiceRequestResponseDto(), { id: 42 });
       serviceMock.create.mockResolvedValue(savedRequest);
 
       const result = await controller.create(1, 12, dto, requestMock);
@@ -44,7 +44,7 @@ describe('ServiceRequestsController', () => {
       try {
         const controller = module.get(ServiceRequestsController);
         const requestMock = { user: { id: 8 } } as Request & { user: { id: number } };
-        const requests = [Object.assign(new ServiceRequest(), { id: 42 })];
+        const requests = [Object.assign(new ServiceRequestResponseDto(), { id: 42 })];
         serviceMock[method].mockResolvedValue(requests);
 
         const result = await controller[method](requestMock);

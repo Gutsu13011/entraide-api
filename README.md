@@ -164,6 +164,12 @@ verified token and the recipient from the provider profile's owner. It copies
 the offering's title, pricing type and hourly rate into the request and sets
 its initial status to `SENT`.
 
+Creation and list responses use the same format. Each request includes
+`requester` and `recipient` objects containing only the account's `id`,
+`firstName` and `lastName`. Emails, password hashes and internal user relations
+are excluded from these responses. Participant names reflect the current
+accounts; the offering title and pricing remain snapshots of the request.
+
 The offering must belong to the provider specified in the URL. A missing
 provider or an offering not found for that provider returns `404 Not Found`.
 An offering on a profile without an owner cannot receive requests and returns

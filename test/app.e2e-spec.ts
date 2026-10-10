@@ -1666,6 +1666,10 @@ describe('AppController (e2e)', () => {
       const usersService = app.get(UsersService);
       ownerId = (await usersService.findByEmail('owner@example.com'))!.id;
       requesterId = (await usersService.findByEmail('requester@example.com'))!.id;
+      await app.get<Repository<User>>(getRepositoryToken(User)).update(requesterId, {
+        firstName: 'Bruno',
+        lastName: 'Leroy',
+      });
       const providerResponse = await request(app.getHttpServer())
         .post('/service-providers')
         .set('Authorization', `Bearer ${ownerToken}`)
@@ -1734,13 +1738,47 @@ describe('AppController (e2e)', () => {
           offeringTitleSnapshot: offering.title,
           offeringPricingTypeSnapshot: pricing.pricingType,
           offeringHourlyRateSnapshot: pricing.hourlyRate,
+          requester: { id: requesterId, firstName: 'Bruno', lastName: 'Leroy' },
+          recipient: { id: ownerId, firstName: 'Alice', lastName: 'Martin' },
         });
         expect(Number.isNaN(Date.parse(response.body.createdAt))).toBe(false);
         const stored = await requestsRepository.findOneByOrFail({ id: response.body.id });
-        expect(stored).toEqual({ ...response.body, createdAt: new Date(response.body.createdAt) });
+        const expectedStored = { ...response.body, createdAt: new Date(response.body.createdAt) };
+        delete expectedStored.requester;
+        delete expectedStored.recipient;
+        expect(stored).toEqual(expectedStored);
         expect(await requestsRepository.count()).toBe(1);
       },
     );
+
+    it(`${route} (POST) should return the same safe response as sent and received lists`, async () => {
+      const created = await sendRequest().expect(201);
+      const sent = await request(app.getHttpServer())
+        .get('/service-requests/sent')
+        .set('Authorization', `Bearer ${requesterToken}`)
+        .expect(200);
+      const received = await request(app.getHttpServer())
+        .get('/service-requests/received')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(200);
+
+      expect(sent.body).toEqual([created.body]);
+      expect(received.body).toEqual([created.body]);
+      expect(created.body.requester).toEqual({
+        id: requesterId,
+        firstName: 'Bruno',
+        lastName: 'Leroy',
+      });
+      expect(created.body.recipient).toEqual({
+        id: ownerId,
+        firstName: 'Alice',
+        lastName: 'Martin',
+      });
+      expect(created.body).not.toHaveProperty('requesterUser');
+      expect(created.body).not.toHaveProperty('recipientUser');
+      expect(created.body).not.toHaveProperty('email');
+      expect(created.body).not.toHaveProperty('passwordHash');
+    });
 
     it.each(['missing', 'invalid', 'expired'])(
       `${route} (POST) should reject a %s bearer token without creating a request`,
@@ -1898,6 +1936,7 @@ describe('AppController (e2e)', () => {
     let userB: number;
     let repository: Repository<ServiceRequest>;
     let rows: ServiceRequest[];
+    let participants: Record<number, { id: number; firstName: string; lastName: string }>;
 
     beforeEach(async () => {
       tokenA = await getAccessToken('a@example.com');
@@ -1907,6 +1946,18 @@ describe('AppController (e2e)', () => {
       userA = (await users.findByEmail('a@example.com'))!.id;
       userB = (await users.findByEmail('b@example.com'))!.id;
       const userC = (await users.findByEmail('c@example.com'))!.id;
+      participants = {
+        [userA]: { id: userA, firstName: 'Alice', lastName: 'Martin' },
+        [userB]: { id: userB, firstName: 'Bruno', lastName: 'Leroy' },
+        [userC]: { id: userC, firstName: 'Chloé', lastName: 'Durand' },
+      };
+      const userRepository = app.get<Repository<User>>(getRepositoryToken(User));
+      for (const participant of Object.values(participants)) {
+        await userRepository.update(participant.id, {
+          firstName: participant.firstName,
+          lastName: participant.lastName,
+        });
+      }
       repository = app.get<Repository<ServiceRequest>>(getRepositoryToken(ServiceRequest));
       const old = new Date('2026-01-01T10:00:00Z');
       const recent = new Date('2026-01-02T10:00:00Z');
@@ -1935,7 +1986,12 @@ describe('AppController (e2e)', () => {
     });
 
     function asJson(selected: ServiceRequest[]) {
-      return selected.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }));
+      return selected.map((row) => ({
+        ...row,
+        createdAt: row.createdAt.toISOString(),
+        requester: participants[row.requesterUserId],
+        recipient: participants[row.recipientUserId],
+      }));
     }
 
     it.each(['sent', 'received'] as const)(
@@ -1957,6 +2013,28 @@ describe('AppController (e2e)', () => {
         expect(responseA.body).toEqual(asJson(expectedA));
         expect(responseB.body).toEqual(asJson(expectedB));
         expect(await repository.count()).toBe(7);
+      },
+    );
+
+    it.each(['sent', 'received'] as const)(
+      '/service-requests/%s (GET) should expose only the id and names of each participant',
+      async (direction) => {
+        const response = await request(app.getHttpServer())
+          .get(`/service-requests/${direction}`)
+          .set('Authorization', `Bearer ${tokenA}`)
+          .expect(200);
+
+        expect(response.body).toHaveLength(3);
+        for (const item of response.body) {
+          expect(item.requester).toEqual(participants[item.requesterUserId]);
+          expect(item.recipient).toEqual(participants[item.recipientUserId]);
+          expect(Object.keys(item.requester).sort()).toEqual(['firstName', 'id', 'lastName']);
+          expect(Object.keys(item.recipient).sort()).toEqual(['firstName', 'id', 'lastName']);
+          expect(item).not.toHaveProperty('requesterUser');
+          expect(item).not.toHaveProperty('recipientUser');
+          expect(item).not.toHaveProperty('email');
+          expect(item).not.toHaveProperty('passwordHash');
+        }
       },
     );
 

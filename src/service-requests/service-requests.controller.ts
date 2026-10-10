@@ -13,8 +13,8 @@ import {
 import type { Request } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { CreateServiceRequestDto } from './dto/create-service-request.dto.js';
-import { ServiceRequest } from './service-request.entity.js';
 import { ServiceRequestsService } from './service-requests.service.js';
+import { ServiceRequestResponseDto } from './dto/service-request-response.dto.js';
 
 @ApiTags('service-requests')
 @Controller()
@@ -22,7 +22,7 @@ export class ServiceRequestsController {
   constructor(private readonly serviceRequestsService: ServiceRequestsService) {}
 
   @ApiOperation({ summary: 'Send a request for a service offering' })
-  @ApiCreatedResponse({ type: ServiceRequest })
+  @ApiCreatedResponse({ type: ServiceRequestResponseDto })
   @ApiBadRequestResponse({
     description: 'The identifiers or request body are invalid',
   })
@@ -45,7 +45,7 @@ export class ServiceRequestsController {
     @Param('serviceOfferingId', ParseIntPipe) serviceOfferingId: number,
     @Body() createServiceRequestDto: CreateServiceRequestDto,
     @Req() request: Request & { user: { id: number } },
-  ): Promise<ServiceRequest> {
+  ): Promise<ServiceRequestResponseDto> {
     return this.serviceRequestsService.create(
       serviceProviderId,
       serviceOfferingId,
@@ -55,19 +55,21 @@ export class ServiceRequestsController {
   }
 
   @ApiOperation({ summary: 'List requests sent by the authenticated user' })
-  @ApiOkResponse({ type: ServiceRequest, isArray: true })
+  @ApiOkResponse({ type: ServiceRequestResponseDto, isArray: true })
   @ApiBearerAuth()
   @ApiUnauthorizedResponse({
     description: 'Missing, invalid or expired access token',
   })
   @UseGuards(JwtAuthGuard)
   @Get('service-requests/sent')
-  findSentByUser(@Req() request: Request & { user: { id: number } }): Promise<ServiceRequest[]> {
+  findSentByUser(
+    @Req() request: Request & { user: { id: number } },
+  ): Promise<ServiceRequestResponseDto[]> {
     return this.serviceRequestsService.findSentByUser(request.user.id);
   }
 
   @ApiOperation({ summary: 'List requests received by the authenticated user' })
-  @ApiOkResponse({ type: ServiceRequest, isArray: true })
+  @ApiOkResponse({ type: ServiceRequestResponseDto, isArray: true })
   @ApiBearerAuth()
   @ApiUnauthorizedResponse({
     description: 'Missing, invalid or expired access token',
@@ -76,7 +78,7 @@ export class ServiceRequestsController {
   @Get('service-requests/received')
   findReceivedByUser(
     @Req() request: Request & { user: { id: number } },
-  ): Promise<ServiceRequest[]> {
+  ): Promise<ServiceRequestResponseDto[]> {
     return this.serviceRequestsService.findReceivedByUser(request.user.id);
   }
 }
