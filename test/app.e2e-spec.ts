@@ -2096,6 +2096,287 @@ describe('AppController (e2e)', () => {
     );
   });
 
+  describe('service request status updates', () => {
+    const route = '/service-requests/:id/status';
+    let recipientToken: string;
+    let requesterToken: string;
+    let unrelatedToken: string;
+    let recipientId: number;
+    let providerId: number;
+    let original: ServiceRequest;
+    let originalResponse: Record<string, unknown>;
+    let repository: Repository<ServiceRequest>;
+
+    beforeEach(async () => {
+      recipientToken = await getAccessToken('recipient@example.com');
+      requesterToken = await getAccessToken('requester@example.com');
+      unrelatedToken = await getAccessToken('unrelated@example.com');
+      const usersService = app.get(UsersService);
+      recipientId = (await usersService.findByEmail('recipient@example.com'))!.id;
+      const requesterId = (await usersService.findByEmail('requester@example.com'))!.id;
+      await app.get<Repository<User>>(getRepositoryToken(User)).update(requesterId, {
+        firstName: 'Bruno',
+        lastName: 'Leroy',
+      });
+      const provider = await request(app.getHttpServer())
+        .post('/service-providers')
+        .set('Authorization', `Bearer ${recipientToken}`)
+        .send({
+          firstName: 'Alice',
+          lastName: 'Martin',
+          profession: 'Peintre',
+          city: 'Paris',
+          description: 'Peinture intérieure.',
+          hourlyRate: 35,
+          available: true,
+          imageUrl: '',
+        })
+        .expect(201);
+      providerId = provider.body.id;
+      const offering = await request(app.getHttpServer())
+        .post(`/service-providers/${providerId}/service-offerings`)
+        .set('Authorization', `Bearer ${recipientToken}`)
+        .send({
+          title: 'Peinture',
+          description: 'Peinture intérieure.',
+          pricingType: ServicePricingType.HOURLY,
+          hourlyRate: 35,
+        })
+        .expect(201);
+      const created = await request(app.getHttpServer())
+        .post(
+          `/service-providers/${providerId}/service-offerings/${offering.body.id}/service-requests`,
+        )
+        .set('Authorization', `Bearer ${requesterToken}`)
+        .send({ message: 'Bonjour, je souhaite repeindre ma chambre.' })
+        .expect(201);
+      originalResponse = created.body;
+      repository = app.get<Repository<ServiceRequest>>(getRepositoryToken(ServiceRequest));
+      original = await repository.findOneByOrFail({ id: created.body.id });
+    });
+
+    function patch(body: object, token = recipientToken, id: number | string = original.id) {
+      return request(app.getHttpServer())
+        .patch(`/service-requests/${id}/status`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(body);
+    }
+
+    async function expectStored(
+      status = ServiceRequestStatus.SENT,
+      serviceOfferingId = original.serviceOfferingId,
+    ) {
+      expect(await repository.findOneByOrFail({ id: original.id })).toEqual({
+        ...original,
+        status,
+        serviceOfferingId,
+      });
+      expect(await repository.count()).toBe(1);
+    }
+
+    it.each([
+      { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.READ },
+      { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.ACCEPTED },
+      { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.REJECTED },
+      { from: ServiceRequestStatus.READ, to: ServiceRequestStatus.ACCEPTED },
+      { from: ServiceRequestStatus.READ, to: ServiceRequestStatus.REJECTED },
+    ])(
+      `${route} (PATCH) should allow the recipient to change $from to $to without changing other data`,
+      async ({ from, to }) => {
+        await repository.update(original.id, { status: from });
+
+        const response = await patch({ status: to }).expect(200);
+
+        expect(response.body).toEqual({ ...originalResponse, status: to });
+        expect(response.body.requester).toEqual({
+          id: original.requesterUserId,
+          firstName: 'Bruno',
+          lastName: 'Leroy',
+        });
+        expect(response.body.recipient).toEqual({
+          id: recipientId,
+          firstName: 'Alice',
+          lastName: 'Martin',
+        });
+        await expectStored(to);
+      },
+    );
+
+    it.each([
+      { from: ServiceRequestStatus.READ, to: ServiceRequestStatus.READ },
+      ...[ServiceRequestStatus.ACCEPTED, ServiceRequestStatus.REJECTED].flatMap((from) =>
+        [
+          ServiceRequestStatus.READ,
+          ServiceRequestStatus.ACCEPTED,
+          ServiceRequestStatus.REJECTED,
+        ].map((to) => ({ from, to })),
+      ),
+    ])(
+      `${route} (PATCH) should reject the transition $from to $to with 409`,
+      async ({ from, to }) => {
+        await repository.update(original.id, { status: from });
+
+        await patch({ status: to }).expect(409);
+
+        await expectStored(from);
+      },
+    );
+
+    it.each(['requester', 'unrelated'] as const)(
+      `${route} (PATCH) should reject the %s account with 403`,
+      async (actor) => {
+        const token = actor === 'requester' ? requesterToken : unrelatedToken;
+
+        await patch({ status: ServiceRequestStatus.ACCEPTED }, token).expect(403);
+
+        await expectStored();
+      },
+    );
+
+    it.each(['missing', 'invalid', 'expired'] as const)(
+      `${route} (PATCH) should reject a %s bearer token with 401`,
+      async (kind) => {
+        const pending = request(app.getHttpServer())
+          .patch(`/service-requests/${original.id}/status`)
+          .send({ status: ServiceRequestStatus.ACCEPTED });
+        if (kind === 'invalid') pending.set('Authorization', 'Bearer invalid-token');
+        if (kind === 'expired') {
+          const expired = await app
+            .get(JwtService)
+            .signAsync({ sub: String(recipientId) }, { expiresIn: -1 });
+          pending.set('Authorization', `Bearer ${expired}`);
+        }
+
+        await pending.expect(401);
+
+        await expectStored();
+      },
+    );
+
+    it.each([
+      { label: 'a missing status', body: {} },
+      { label: 'a null status', body: { status: null } },
+      { label: 'a numeric status', body: { status: 1 } },
+      { label: 'an unknown status', body: { status: 'COMPLETED' } },
+      { label: 'a lowercase status', body: { status: 'accepted' } },
+      { label: 'the initial SENT status', body: { status: ServiceRequestStatus.SENT } },
+      { label: 'an array status', body: { status: [ServiceRequestStatus.ACCEPTED] } },
+    ])(`${route} (PATCH) should reject $label with 400`, async ({ body }) => {
+      await patch(body).expect(400);
+
+      await expectStored();
+    });
+
+    it.each([
+      { field: 'message', value: 'Message remplacé' },
+      { field: 'recipientUserId', value: 999 },
+      { field: 'requesterUserId', value: 999 },
+      { field: 'serviceOfferingId', value: null },
+      { field: 'offeringTitleSnapshot', value: 'Titre remplacé' },
+      { field: 'offeringPricingTypeSnapshot', value: ServicePricingType.FREE },
+      { field: 'offeringHourlyRateSnapshot', value: 1 },
+    ])(
+      `${route} (PATCH) should reject an extra $field field with 400`,
+      async ({ field, value }) => {
+        await patch({ status: ServiceRequestStatus.ACCEPTED, [field]: value }).expect(400);
+
+        await expectStored();
+      },
+    );
+
+    it.each([
+      { id: 'invalid', expected: 400 },
+      { id: '1.5', expected: 400 },
+      { id: '999999', expected: 404 },
+    ])(`${route} (PATCH) should return $expected for request id $id`, async ({ id, expected }) => {
+      await patch({ status: ServiceRequestStatus.READ }, recipientToken, id).expect(expected);
+
+      await expectStored();
+    });
+
+    it.each(['offering', 'provider'] as const)(
+      `${route} (PATCH) should allow the recorded recipient to accept after %s deletion`,
+      async (deleted) => {
+        const url =
+          deleted === 'offering'
+            ? `/service-providers/${providerId}/service-offerings/${original.serviceOfferingId}`
+            : `/service-providers/${providerId}`;
+        await request(app.getHttpServer())
+          .delete(url)
+          .set('Authorization', `Bearer ${recipientToken}`)
+          .expect(204);
+
+        const response = await patch({ status: ServiceRequestStatus.ACCEPTED }).expect(200);
+
+        expect(response.body).toEqual({
+          ...originalResponse,
+          serviceOfferingId: null,
+          status: ServiceRequestStatus.ACCEPTED,
+        });
+        await expectStored(ServiceRequestStatus.ACCEPTED, null);
+      },
+    );
+
+    it.each(['sent', 'received'] as const)(
+      '/service-requests/%s (GET) should preserve SENT on consultation and reflect explicit status updates',
+      async (direction) => {
+        const token = direction === 'sent' ? requesterToken : recipientToken;
+        const before = await request(app.getHttpServer())
+          .get(`/service-requests/${direction}`)
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        expect(before.body).toEqual([originalResponse]);
+        await expectStored();
+
+        await patch({ status: ServiceRequestStatus.READ }).expect(200);
+        const after = await request(app.getHttpServer())
+          .get(`/service-requests/${direction}`)
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+
+        expect(after.body).toEqual([{ ...originalResponse, status: ServiceRequestStatus.READ }]);
+        await expectStored(ServiceRequestStatus.READ);
+      },
+    );
+
+    it(`${route} (PATCH) should let only one concurrent accept or reject decision succeed`, async () => {
+      const realFindOne = repository.findOne.bind(repository);
+      let readCount = 0;
+      let releaseReads!: () => void;
+      const bothRead = new Promise<void>((resolve) => {
+        releaseReads = resolve;
+      });
+      // Keep the real database reads and writes: delay both reads until they saw SENT.
+      const spy = vi.spyOn(repository, 'findOne').mockImplementation(async (options) => {
+        const row = await realFindOne(options);
+        readCount += 1;
+        if (readCount === 2) releaseReads();
+        await bothRead;
+        return row;
+      });
+      try {
+        const decisions = [ServiceRequestStatus.ACCEPTED, ServiceRequestStatus.REJECTED];
+        const responses = await Promise.all(decisions.map((status) => patch({ status })));
+
+        expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+        const winnerIndex = responses.findIndex((response) => response.status === 200);
+        expect(responses[winnerIndex].body).toEqual({
+          ...originalResponse,
+          status: decisions[winnerIndex],
+        });
+        expect(responses[1 - winnerIndex].body.message).toBe(
+          'Service request changed. Refresh and try again',
+        );
+        // Restore before reading the final row, so this assertion does not use the barrier.
+        spy.mockRestore();
+        await expectStored(decisions[winnerIndex]);
+      } finally {
+        releaseReads();
+        spy.mockRestore();
+      }
+    });
+  });
+
   afterEach(async () => {
     await app.close();
   });

@@ -1,9 +1,20 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
   ApiConflictResponse,
   ApiCreatedResponse,
+  ApiForbiddenResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -15,6 +26,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { CreateServiceRequestDto } from './dto/create-service-request.dto.js';
 import { ServiceRequestsService } from './service-requests.service.js';
 import { ServiceRequestResponseDto } from './dto/service-request-response.dto.js';
+import { UpdateServiceRequestStatusDto } from './dto/update-service-request-status.dto.js';
 
 @ApiTags('service-requests')
 @Controller()
@@ -80,5 +92,27 @@ export class ServiceRequestsController {
     @Req() request: Request & { user: { id: number } },
   ): Promise<ServiceRequestResponseDto[]> {
     return this.serviceRequestsService.findReceivedByUser(request.user.id);
+  }
+
+  @ApiOperation({ summary: 'Update a service request status' })
+  @ApiOkResponse({ type: ServiceRequestResponseDto })
+  @ApiBadRequestResponse({ description: 'The identifier or request body is invalid' })
+  @ApiUnauthorizedResponse({ description: 'Missing, invalid or expired access token' })
+  @ApiForbiddenResponse({ description: 'Only the recipient can update this request' })
+  @ApiNotFoundResponse({ description: 'Service request not found' })
+  @ApiConflictResponse({ description: 'Invalid transition or concurrent request modification' })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Patch('service-requests/:id/status')
+  updateStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() updateServiceRequestStatusDto: UpdateServiceRequestStatusDto,
+    @Req() request: Request & { user: { id: number } },
+  ): Promise<ServiceRequestResponseDto> {
+    return this.serviceRequestsService.updateStatus(
+      id,
+      updateServiceRequestStatusDto,
+      request.user.id,
+    );
   }
 }

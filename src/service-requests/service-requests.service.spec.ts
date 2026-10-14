@@ -1,4 +1,4 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ServiceRequestsService } from './service-requests.service.js';
@@ -17,6 +17,8 @@ describe('ServiceRequestsService', () => {
     save: vi.fn(),
     find: vi.fn(),
     findOneOrFail: vi.fn(),
+    findOne: vi.fn(),
+    update: vi.fn(),
   };
   const offeringRepositoryMock = { findOneBy: vi.fn() };
   const providerServiceMock = { findOne: vi.fn() };
@@ -283,4 +285,239 @@ describe('ServiceRequestsService', () => {
       await expect(service[method](8)).resolves.toEqual([]);
     },
   );
+
+  describe('updateStatus', () => {
+    let statusRequest: ServiceRequest;
+    const createdAt = new Date('2026-10-14T10:00:00.000Z');
+    const validTransitions = [
+      { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.READ },
+      { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.ACCEPTED },
+      { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.REJECTED },
+      { from: ServiceRequestStatus.READ, to: ServiceRequestStatus.ACCEPTED },
+      { from: ServiceRequestStatus.READ, to: ServiceRequestStatus.REJECTED },
+    ];
+    const invalidTransitions = Object.values(ServiceRequestStatus).flatMap((from) =>
+      Object.values(ServiceRequestStatus)
+        .filter(
+          (to) =>
+            !validTransitions.some(
+              (transition) => transition.from === from && transition.to === to,
+            ),
+        )
+        .map((to) => ({ from, to })),
+    );
+
+    function expectedResponse(status: ServiceRequestStatus, serviceOfferingId: number | null = 12) {
+      return {
+        id: 42,
+        message: dto.message,
+        status,
+        createdAt,
+        requesterUserId: 8,
+        recipientUserId: 7,
+        serviceOfferingId,
+        offeringTitleSnapshot: 'Peinture',
+        offeringPricingTypeSnapshot: ServicePricingType.HOURLY,
+        offeringHourlyRateSnapshot: 35,
+        requester: { id: 8, firstName: 'Alice', lastName: 'Martin' },
+        recipient: { id: 7, firstName: 'Bruno', lastName: 'Leroy' },
+      };
+    }
+
+    beforeEach(() => {
+      statusRequest = Object.assign(new ServiceRequest(), {
+        id: 42,
+        message: dto.message,
+        status: ServiceRequestStatus.SENT,
+        createdAt,
+        requesterUserId: 8,
+        recipientUserId: 7,
+        serviceOfferingId: 12,
+        offeringTitleSnapshot: 'Peinture',
+        offeringPricingTypeSnapshot: ServicePricingType.HOURLY,
+        offeringHourlyRateSnapshot: 35,
+        internalNote: 'Internal value',
+        requesterUser: {
+          id: 8,
+          firstName: 'Alice',
+          lastName: 'Martin',
+          email: 'alice@example.com',
+          passwordHash: 'private-requester-hash',
+        },
+        recipientUser: {
+          id: 7,
+          firstName: 'Bruno',
+          lastName: 'Leroy',
+          email: 'bruno@example.com',
+          passwordHash: 'private-recipient-hash',
+        },
+      });
+      requestRepositoryMock.findOne.mockResolvedValue(statusRequest);
+      requestRepositoryMock.update.mockResolvedValue({ affected: 1 });
+    });
+
+    it.each(validTransitions)(
+      'should allow the recipient to change $from to $to and return a safe response',
+      async ({ from, to }) => {
+        statusRequest.status = from;
+
+        const result = await service.updateStatus(42, { status: to }, 7);
+
+        expect(requestRepositoryMock.findOne).toHaveBeenCalledExactlyOnceWith({
+          where: { id: 42 },
+          relations: { requesterUser: true, recipientUser: true },
+        });
+        expect(requestRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
+          { id: 42, recipientUserId: 7, status: from },
+          { status: to },
+        );
+        expect(result).toEqual(expectedResponse(to));
+        expect(requestRepositoryMock.save).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(invalidTransitions)(
+      'should reject the transition from $from to $to without writing to the database',
+      async ({ from, to }) => {
+        statusRequest.status = from;
+
+        await expect(service.updateStatus(42, { status: to }, 7)).rejects.toThrow(
+          new ConflictException('This status transition is not allowed'),
+        );
+
+        expect(requestRepositoryMock.update).not.toHaveBeenCalled();
+        expect(statusRequest.status).toBe(from);
+      },
+    );
+
+    it('should report a missing request before attempting an update', async () => {
+      requestRepositoryMock.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.updateStatus(42, { status: ServiceRequestStatus.READ }, 7),
+      ).rejects.toThrow(new NotFoundException('Service request not found'));
+
+      expect(requestRepositoryMock.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { label: 'the requester', userId: 8, status: ServiceRequestStatus.SENT },
+      { label: 'an unrelated account', userId: 99, status: ServiceRequestStatus.READ },
+      {
+        label: 'an unrelated account on a finalized request',
+        userId: 99,
+        status: ServiceRequestStatus.ACCEPTED,
+      },
+    ])(
+      'should refuse $label before checking transitions or updating the request',
+      async ({ userId, status }) => {
+        statusRequest.status = status;
+
+        await expect(
+          service.updateStatus(42, { status: ServiceRequestStatus.READ }, userId),
+        ).rejects.toThrow(new ForbiddenException('Only the recipient can update this request'));
+
+        expect(requestRepositoryMock.update).not.toHaveBeenCalled();
+        expect(statusRequest.status).toBe(status);
+      },
+    );
+
+    it('should reject a stale status update when no row matches the original state', async () => {
+      requestRepositoryMock.update.mockResolvedValue({ affected: 0 });
+
+      await expect(
+        service.updateStatus(42, { status: ServiceRequestStatus.ACCEPTED }, 7),
+      ).rejects.toThrow(new ConflictException('Service request changed. Refresh and try again'));
+
+      expect(requestRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
+        { id: 42, recipientUserId: 7, status: ServiceRequestStatus.SENT },
+        { status: ServiceRequestStatus.ACCEPTED },
+      );
+      expect(statusRequest.status).toBe(ServiceRequestStatus.SENT);
+    });
+
+    it('should allow the recorded recipient to decide on a request whose offering was deleted', async () => {
+      statusRequest.serviceOfferingId = null;
+
+      const result = await service.updateStatus(42, { status: ServiceRequestStatus.ACCEPTED }, 7);
+
+      expect(result).toEqual(expectedResponse(ServiceRequestStatus.ACCEPTED, null));
+      expect(providerServiceMock.findOne).not.toHaveBeenCalled();
+      expect(offeringRepositoryMock.findOneBy).not.toHaveBeenCalled();
+      expect(requestRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
+        { id: 42, recipientUserId: 7, status: ServiceRequestStatus.SENT },
+        { status: ServiceRequestStatus.ACCEPTED },
+      );
+    });
+
+    it('should update only status even if a caller supplies extra identities, message or snapshots', async () => {
+      const forgedDto = {
+        status: ServiceRequestStatus.READ,
+        message: 'Forged message',
+        requesterUserId: 99,
+        recipientUserId: 99,
+        serviceOfferingId: 99,
+        offeringTitleSnapshot: 'Forged title',
+        offeringPricingTypeSnapshot: ServicePricingType.FREE,
+        offeringHourlyRateSnapshot: null,
+      };
+
+      const result = await service.updateStatus(42, forgedDto, 7);
+
+      expect(requestRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
+        { id: 42, recipientUserId: 7, status: ServiceRequestStatus.SENT },
+        { status: ServiceRequestStatus.READ },
+      );
+      expect(result).toEqual(expectedResponse(ServiceRequestStatus.READ));
+    });
+
+    it('should propagate a read failure without attempting an update', async () => {
+      const error = new Error('Database read failed');
+      requestRepositoryMock.findOne.mockRejectedValue(error);
+
+      await expect(service.updateStatus(42, { status: ServiceRequestStatus.READ }, 7)).rejects.toBe(
+        error,
+      );
+
+      expect(requestRepositoryMock.update).not.toHaveBeenCalled();
+    });
+
+    it('should propagate a write failure instead of returning a successful status response', async () => {
+      const error = new Error('Database write failed');
+      requestRepositoryMock.update.mockRejectedValue(error);
+
+      await expect(
+        service.updateStatus(42, { status: ServiceRequestStatus.ACCEPTED }, 7),
+      ).rejects.toBe(error);
+
+      expect(statusRequest.status).toBe(ServiceRequestStatus.SENT);
+    });
+
+    it('should wait for the conditional database update before resolving the response', async () => {
+      let completeWrite!: (result: { affected: number }) => void;
+      const writeResult = new Promise<{ affected: number }>((resolve) => {
+        completeWrite = resolve;
+      });
+      requestRepositoryMock.update.mockReturnValue(writeResult);
+      const settledSpy = vi.fn();
+
+      const pendingResponse = service.updateStatus(
+        42,
+        { status: ServiceRequestStatus.ACCEPTED },
+        7,
+      );
+      void pendingResponse.then(settledSpy, settledSpy);
+      await Promise.resolve();
+
+      expect(requestRepositoryMock.update).toHaveBeenCalledTimes(1);
+      expect(settledSpy).not.toHaveBeenCalled();
+      completeWrite({ affected: 1 });
+      await expect(pendingResponse).resolves.toEqual(
+        expectedResponse(ServiceRequestStatus.ACCEPTED),
+      );
+      expect(settledSpy).toHaveBeenCalledExactlyOnceWith(
+        expectedResponse(ServiceRequestStatus.ACCEPTED),
+      );
+    });
+  });
 });

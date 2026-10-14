@@ -1,3 +1,4 @@
+import { ServiceRequestStatus } from './service-request-status.enum.js';
 import { Test } from '@nestjs/testing';
 import type { Request } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
@@ -58,4 +59,31 @@ describe('ServiceRequestsController', () => {
       }
     },
   );
+  it('should pass the request id, status DTO and authenticated recipient id to the service', async () => {
+    const serviceMock = { updateStatus: vi.fn() };
+    const module = await Test.createTestingModule({
+      controllers: [ServiceRequestsController],
+      providers: [{ provide: ServiceRequestsService, useValue: serviceMock }],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
+    try {
+      const controller = module.get(ServiceRequestsController);
+      const dto = { status: ServiceRequestStatus.ACCEPTED };
+      const requestMock = { user: { id: 7 } } as Request & { user: { id: number } };
+      const response = Object.assign(new ServiceRequestResponseDto(), {
+        id: 42,
+        status: ServiceRequestStatus.ACCEPTED,
+      });
+      serviceMock.updateStatus.mockResolvedValue(response);
+
+      const result = await controller.updateStatus(42, dto, requestMock);
+
+      expect(serviceMock.updateStatus).toHaveBeenCalledExactlyOnceWith(42, dto, 7);
+      expect(result).toBe(response);
+    } finally {
+      await module.close();
+    }
+  });
 });

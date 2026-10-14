@@ -16,7 +16,7 @@ service.
 - Pagination, search, filtering and sorting
 - Provider reviews
 - Multiple service offerings per provider, with free or hourly pricing
-- Authenticated service requests with private sent and received lists and historical offering snapshots
+- Authenticated service requests with private sent and received lists, historical offering snapshots and recipient-only status updates
 - SQLite persistence with TypeORM migrations
 - Request validation and interactive Swagger documentation
 - Health checks and request logging
@@ -31,8 +31,9 @@ The application is under active development.
 User registration, login and a protected profile endpoint are available.
 Provider ownership and authorization are implemented for profile updates,
 deletion, and service offering creation, updates and deletion. Service request
-creation and private sent and received lists are available. Requests currently
-use the initial `SENT` status; responses and status transitions are planned.
+creation, private sent and received lists, and recipient-only status updates
+are available. Recipients can mark a request as read, accept it or reject it.
+Reply messages and the completion workflow are planned.
 The current version is intended for local development and demonstration.
 
 ## Requirements
@@ -114,6 +115,7 @@ The following operations require a valid access token:
 - `POST /service-providers/:serviceProviderId/service-offerings/:serviceOfferingId/service-requests`
 - `GET /service-requests/sent`
 - `GET /service-requests/received`
+- `PATCH /service-requests/:id/status`
 
 Provider, offering and review consultation endpoints remain public.
 
@@ -149,6 +151,7 @@ All service request endpoints require a valid access token:
   sends a request for an offering and returns `201 Created`.
 - `GET /service-requests/sent` lists requests sent by the authenticated account.
 - `GET /service-requests/received` lists requests addressed to the authenticated account.
+- `PATCH /service-requests/:id/status` changes the status of a request addressed to the authenticated account and returns `200 OK`.
 
 The creation body contains only the message:
 
@@ -164,7 +167,7 @@ verified token and the recipient from the provider profile's owner. It copies
 the offering's title, pricing type and hourly rate into the request and sets
 its initial status to `SENT`.
 
-Creation and list responses use the same format. Each request includes
+Creation, list and status update responses use the same format. Each request includes
 `requester` and `recipient` objects containing only the account's `id`,
 `firstName` and `lastName`. Emails, password hashes and internal user relations
 are excluded from these responses. Participant names reflect the current
@@ -185,6 +188,37 @@ unchanged. Deleting the offering, including through provider profile deletion,
 preserves the request and its recipient, and sets `serviceOfferingId` to `null`.
 The snapshot records the offering at the time of the request; sending a request
 does not mean the provider has accepted the work.
+
+### Status updates
+
+Use the service request's id in the URL, and send only the target status:
+
+```json
+{
+  "status": "ACCEPTED"
+}
+```
+
+Only the recorded recipient can change the status. The requester and other
+accounts receive `403 Forbidden`. This permission remains valid after the
+original offering or provider profile is deleted.
+
+Allowed transitions are:
+
+- `SENT` → `READ`, `ACCEPTED` or `REJECTED`.
+- `READ` → `ACCEPTED` or `REJECTED`.
+- `ACCEPTED` and `REJECTED` are final in the current workflow.
+
+Missing or invalid statuses, including `SENT` as a target, and extra body fields
+return `400 Bad Request`. A missing request returns `404 Not Found`.
+Repeating the current status or requesting a forbidden transition returns
+`409 Conflict`. The update also checks the previously read status in the
+SQL write: if another action changed the request meanwhile, it returns `409`
+instead of overwriting that decision. Refresh the request before trying again.
+
+A status update leaves the message, participants, creation date and offering
+snapshots unchanged. Sent and received GET endpoints never change the status;
+marking a request as read requires an explicit PATCH request.
 
 ## Demo data
 
@@ -281,6 +315,6 @@ migrations, unit tests and end-to-end tests.
 
 ## Planned improvements
 
-- Service request responses and status transitions
-- Service request forms and sent/received lists in the Angular frontend
+- Service request reply messages and completion workflow
+- Recipient status actions in the Angular frontend
 - Reviews linked to completed service requests
