@@ -186,6 +186,20 @@ not override the identity from the token.
 Changing an offering's title or pricing leaves existing request snapshots
 unchanged. Deleting the offering, including through provider profile deletion,
 preserves the request and its recipient, and sets `serviceOfferingId` to `null`.
+Requests also store and return a direct, nullable `serviceProviderId`. New
+requests derive this id from the provider loaded by the API, independently of
+the recipient's account id. A client-supplied provider id in the body is
+rejected. Deleting only the offering preserves this profile link; deleting
+the provider sets it to `null` and still preserves the request.
+
+The `AddServiceRequestProvider` migration fills this link for existing
+requests whose offering still exists. Older requests without an offering
+keep a null link. The migration adds the column, foreign key and index
+without rebuilding provider or offering tables. Creation, sent and received
+lists, and status updates all return `serviceProviderId`, including an explicit
+`null` when the profile link is unavailable. This is the profile id, not the
+recipient account id.
+
 The snapshot records the offering at the time of the request; sending a request
 does not mean the provider has accepted the work.
 

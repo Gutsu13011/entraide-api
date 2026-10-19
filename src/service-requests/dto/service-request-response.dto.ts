@@ -32,6 +32,14 @@ export class ServiceRequestResponseDto {
   @ApiProperty({ type: Number, nullable: true, example: 12 })
   serviceOfferingId: number | null;
 
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    example: 13,
+    description: 'Provider profile identifier, or null if unavailable',
+  })
+  serviceProviderId: number | null;
+
   @ApiProperty({ example: 'Peinture' })
   offeringTitleSnapshot: string;
 

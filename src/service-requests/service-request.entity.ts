@@ -13,6 +13,7 @@ import { ServiceRequestStatus } from './service-request-status.enum.js';
 import type { ServicePricingType } from '../service-offerings/service-pricing-type.enum.js';
 import { User } from '../users/user.entity.js';
 import { ServiceOffering } from '../service-offerings/service-offering.entity.js';
+import { ServiceProvider } from '../service-providers/service-provider.entity.js';
 
 @Entity('service_requests')
 @Check(
@@ -48,6 +49,9 @@ export class ServiceRequest {
   @Index('IDX_service_requests_service_offering_id')
   @Column('integer', { nullable: true })
   serviceOfferingId: number | null;
+  @Index('IDX_service_requests_service_provider_id')
+  @Column('integer', { nullable: true })
+  serviceProviderId: number | null;
 
   @ManyToOne(() => User, { nullable: false, onDelete: 'RESTRICT' })
   @JoinColumn({
@@ -69,4 +73,11 @@ export class ServiceRequest {
     foreignKeyConstraintName: 'FK_service_requests_service_offering',
   })
   serviceOffering: Relation<ServiceOffering> | null;
+
+  @ManyToOne(() => ServiceProvider, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({
+    name: 'serviceProviderId',
+    foreignKeyConstraintName: 'FK_service_requests_service_provider',
+  })
+  serviceProvider: Relation<ServiceProvider> | null;
 }

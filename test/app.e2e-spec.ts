@@ -1735,6 +1735,7 @@ describe('AppController (e2e)', () => {
           requesterUserId: requesterId,
           recipientUserId: ownerId,
           serviceOfferingId: offering.id,
+          serviceProviderId: providerId,
           offeringTitleSnapshot: offering.title,
           offeringPricingTypeSnapshot: pricing.pricingType,
           offeringHourlyRateSnapshot: pricing.hourlyRate,
@@ -1743,7 +1744,13 @@ describe('AppController (e2e)', () => {
         });
         expect(Number.isNaN(Date.parse(response.body.createdAt))).toBe(false);
         const stored = await requestsRepository.findOneByOrFail({ id: response.body.id });
-        const expectedStored = { ...response.body, createdAt: new Date(response.body.createdAt) };
+        const expectedStored = {
+          ...response.body,
+          serviceProviderId: providerId,
+          createdAt: new Date(response.body.createdAt),
+        };
+        expect(stored.serviceProviderId).toBe(providerId);
+        expect(providerId).not.toBe(ownerId);
         delete expectedStored.requester;
         delete expectedStored.recipient;
         expect(stored).toEqual(expectedStored);
@@ -1815,6 +1822,7 @@ describe('AppController (e2e)', () => {
         requesterUserId: ownerId,
         recipientUserId: requesterId,
         serviceOfferingId: 999,
+        serviceProviderId: 999,
         offeringTitleSnapshot: 'Faux titre',
         offeringPricingTypeSnapshot: ServicePricingType.FREE,
         offeringHourlyRateSnapshot: 1,
@@ -1826,6 +1834,7 @@ describe('AppController (e2e)', () => {
           'property requesterUserId should not exist',
           'property recipientUserId should not exist',
           'property serviceOfferingId should not exist',
+          'property serviceProviderId should not exist',
           'property offeringTitleSnapshot should not exist',
           'property offeringPricingTypeSnapshot should not exist',
           'property offeringHourlyRateSnapshot should not exist',
@@ -1923,8 +1932,25 @@ describe('AppController (e2e)', () => {
         expect(await requestsRepository.findOneByOrFail({ id: before.id })).toEqual({
           ...before,
           serviceOfferingId: null,
+          serviceProviderId: target === 'provider' ? null : providerId,
         });
         expect(await app.get(UsersService).findById(ownerId)).not.toBeNull();
+        for (const [direction, token] of [
+          ['sent', requesterToken],
+          ['received', ownerToken],
+        ]) {
+          const list = await request(app.getHttpServer())
+            .get(`/service-requests/${direction}`)
+            .set('Authorization', `Bearer ${token}`)
+            .expect(200);
+          expect(list.body).toEqual([
+            {
+              ...response.body,
+              serviceOfferingId: null,
+              serviceProviderId: target === 'provider' ? null : providerId,
+            },
+          ]);
+        }
       },
     );
   });
@@ -2030,6 +2056,7 @@ describe('AppController (e2e)', () => {
           expect(item.recipient).toEqual(participants[item.recipientUserId]);
           expect(Object.keys(item.requester).sort()).toEqual(['firstName', 'id', 'lastName']);
           expect(Object.keys(item.recipient).sort()).toEqual(['firstName', 'id', 'lastName']);
+          expect(item).toHaveProperty('serviceProviderId', null);
           expect(item).not.toHaveProperty('requesterUser');
           expect(item).not.toHaveProperty('recipientUser');
           expect(item).not.toHaveProperty('email');
@@ -2165,11 +2192,13 @@ describe('AppController (e2e)', () => {
     async function expectStored(
       status = ServiceRequestStatus.SENT,
       serviceOfferingId = original.serviceOfferingId,
+      serviceProviderId = original.serviceProviderId,
     ) {
       expect(await repository.findOneByOrFail({ id: original.id })).toEqual({
         ...original,
         status,
         serviceOfferingId,
+        serviceProviderId,
       });
       expect(await repository.count()).toBe(1);
     }
@@ -2294,6 +2323,7 @@ describe('AppController (e2e)', () => {
       { field: 'recipientUserId', value: 999 },
       { field: 'requesterUserId', value: 999 },
       { field: 'serviceOfferingId', value: null },
+      { field: 'serviceProviderId', value: 999 },
       { field: 'offeringTitleSnapshot', value: 'Titre remplacé' },
       { field: 'offeringPricingTypeSnapshot', value: ServicePricingType.FREE },
       { field: 'offeringHourlyRateSnapshot', value: 1 },
@@ -2333,16 +2363,26 @@ describe('AppController (e2e)', () => {
         expect(response.body).toEqual({
           ...originalResponse,
           serviceOfferingId: null,
+          serviceProviderId: deleted === 'provider' ? null : providerId,
           status: ServiceRequestStatus.ACCEPTED,
         });
-        await expectStored(ServiceRequestStatus.ACCEPTED, null);
+        await expectStored(
+          ServiceRequestStatus.ACCEPTED,
+          null,
+          deleted === 'provider' ? null : providerId,
+        );
         const completed = await patch({ status: ServiceRequestStatus.COMPLETED }).expect(200);
         expect(completed.body).toEqual({
           ...originalResponse,
           serviceOfferingId: null,
+          serviceProviderId: deleted === 'provider' ? null : providerId,
           status: ServiceRequestStatus.COMPLETED,
         });
-        await expectStored(ServiceRequestStatus.COMPLETED, null);
+        await expectStored(
+          ServiceRequestStatus.COMPLETED,
+          null,
+          deleted === 'provider' ? null : providerId,
+        );
       },
     );
 

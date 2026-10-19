@@ -97,6 +97,7 @@ describe('ServiceRequestsService', () => {
         requesterUserId: 8,
         recipientUserId: 7,
         serviceOfferingId: 12,
+        serviceProviderId: 1,
         offeringTitleSnapshot: 'Peinture',
         offeringPricingTypeSnapshot: pricing.pricingType,
         offeringHourlyRateSnapshot: pricing.hourlyRate,
@@ -116,6 +117,7 @@ describe('ServiceRequestsService', () => {
         requesterUserId: 8,
         recipientUserId: 7,
         serviceOfferingId: 12,
+        serviceProviderId: 1,
         offeringTitleSnapshot: 'Peinture',
         offeringPricingTypeSnapshot: pricing.pricingType,
         offeringHourlyRateSnapshot: pricing.hourlyRate,
@@ -171,6 +173,7 @@ describe('ServiceRequestsService', () => {
       requesterUserId: 99,
       recipientUserId: 99,
       serviceOfferingId: 99,
+      serviceProviderId: 99,
       offeringTitleSnapshot: 'Faux titre',
       offeringPricingTypeSnapshot: ServicePricingType.FREE,
       offeringHourlyRateSnapshot: 1,
@@ -184,6 +187,7 @@ describe('ServiceRequestsService', () => {
       requesterUserId: 8,
       recipientUserId: 7,
       serviceOfferingId: 12,
+      serviceProviderId: 1,
       offeringTitleSnapshot: 'Peinture',
       offeringPricingTypeSnapshot: ServicePricingType.HOURLY,
       offeringHourlyRateSnapshot: 30,
@@ -211,12 +215,14 @@ describe('ServiceRequestsService', () => {
     });
   });
 
-  it.each([
-    { method: 'findSentByUser' as const, field: 'requesterUserId' },
-    { method: 'findReceivedByUser' as const, field: 'recipientUserId' },
-  ])(
-    'should scope $method to the user and return participant identities without private fields',
-    async ({ method, field }) => {
+  it.each(
+    [
+      { method: 'findSentByUser' as const, field: 'requesterUserId' },
+      { method: 'findReceivedByUser' as const, field: 'recipientUserId' },
+    ].flatMap((mode) => [1, null].map((serviceProviderId) => ({ ...mode, serviceProviderId }))),
+  )(
+    'should scope $method to the user and return provider link $serviceProviderId without private participant fields',
+    async ({ method, field, serviceProviderId }) => {
       const createdAt = new Date('2026-10-10T09:30:00.000Z');
       const requesterId = method === 'findSentByUser' ? 8 : 7;
       const recipientId = method === 'findReceivedByUser' ? 8 : 7;
@@ -227,7 +233,8 @@ describe('ServiceRequestsService', () => {
         createdAt,
         requesterUserId: requesterId,
         recipientUserId: recipientId,
-        serviceOfferingId: 12,
+        serviceOfferingId: serviceProviderId === null ? null : 12,
+        serviceProviderId,
         offeringTitleSnapshot: 'Peinture',
         offeringPricingTypeSnapshot: ServicePricingType.HOURLY,
         offeringHourlyRateSnapshot: 30,
@@ -266,7 +273,8 @@ describe('ServiceRequestsService', () => {
           createdAt,
           requesterUserId: requesterId,
           recipientUserId: recipientId,
-          serviceOfferingId: 12,
+          serviceOfferingId: serviceProviderId === null ? null : 12,
+          serviceProviderId,
           offeringTitleSnapshot: 'Peinture',
           offeringPricingTypeSnapshot: ServicePricingType.HOURLY,
           offeringHourlyRateSnapshot: 30,
@@ -308,7 +316,11 @@ describe('ServiceRequestsService', () => {
         .map((to) => ({ from, to })),
     );
 
-    function expectedResponse(status: ServiceRequestStatus, serviceOfferingId: number | null = 12) {
+    function expectedResponse(
+      status: ServiceRequestStatus,
+      serviceOfferingId: number | null = 12,
+      serviceProviderId: number | null = 1,
+    ) {
       return {
         id: 42,
         message: dto.message,
@@ -317,6 +329,7 @@ describe('ServiceRequestsService', () => {
         requesterUserId: 8,
         recipientUserId: 7,
         serviceOfferingId,
+        serviceProviderId,
         offeringTitleSnapshot: 'Peinture',
         offeringPricingTypeSnapshot: ServicePricingType.HOURLY,
         offeringHourlyRateSnapshot: 35,
@@ -334,6 +347,7 @@ describe('ServiceRequestsService', () => {
         requesterUserId: 8,
         recipientUserId: 7,
         serviceOfferingId: 12,
+        serviceProviderId: 1,
         offeringTitleSnapshot: 'Peinture',
         offeringPricingTypeSnapshot: ServicePricingType.HOURLY,
         offeringHourlyRateSnapshot: 35,
@@ -479,6 +493,18 @@ describe('ServiceRequestsService', () => {
       },
     );
 
+    it('should return a null provider link when completing a request after profile deletion', async () => {
+      statusRequest.status = ServiceRequestStatus.ACCEPTED;
+      statusRequest.serviceOfferingId = null;
+      statusRequest.serviceProviderId = null;
+
+      const result = await service.updateStatus(42, { status: ServiceRequestStatus.COMPLETED }, 7);
+
+      expect(result).toEqual(expectedResponse(ServiceRequestStatus.COMPLETED, null, null));
+      expect(providerServiceMock.findOne).not.toHaveBeenCalled();
+      expect(offeringRepositoryMock.findOneBy).not.toHaveBeenCalled();
+    });
+
     it('should update only status even if a caller supplies extra identities, message or snapshots', async () => {
       const forgedDto = {
         status: ServiceRequestStatus.READ,
@@ -486,6 +512,7 @@ describe('ServiceRequestsService', () => {
         requesterUserId: 99,
         recipientUserId: 99,
         serviceOfferingId: 99,
+        serviceProviderId: 99,
         offeringTitleSnapshot: 'Forged title',
         offeringPricingTypeSnapshot: ServicePricingType.FREE,
         offeringHourlyRateSnapshot: null,
