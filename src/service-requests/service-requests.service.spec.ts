@@ -295,6 +295,7 @@ describe('ServiceRequestsService', () => {
       { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.REJECTED },
       { from: ServiceRequestStatus.READ, to: ServiceRequestStatus.ACCEPTED },
       { from: ServiceRequestStatus.READ, to: ServiceRequestStatus.REJECTED },
+      { from: ServiceRequestStatus.ACCEPTED, to: ServiceRequestStatus.COMPLETED },
     ];
     const invalidTransitions = Object.values(ServiceRequestStatus).flatMap((from) =>
       Object.values(ServiceRequestStatus)
@@ -404,7 +405,7 @@ describe('ServiceRequestsService', () => {
       { label: 'the requester', userId: 8, status: ServiceRequestStatus.SENT },
       { label: 'an unrelated account', userId: 99, status: ServiceRequestStatus.READ },
       {
-        label: 'an unrelated account on a finalized request',
+        label: 'an unrelated account on an accepted request',
         userId: 99,
         status: ServiceRequestStatus.ACCEPTED,
       },
@@ -422,33 +423,61 @@ describe('ServiceRequestsService', () => {
       },
     );
 
-    it('should reject a stale status update when no row matches the original state', async () => {
-      requestRepositoryMock.update.mockResolvedValue({ affected: 0 });
+    it.each([8, 99])(
+      "should prevent account %s from completing another recipient's accepted request",
+      async (userId) => {
+        statusRequest.status = ServiceRequestStatus.ACCEPTED;
 
-      await expect(
-        service.updateStatus(42, { status: ServiceRequestStatus.ACCEPTED }, 7),
-      ).rejects.toThrow(new ConflictException('Service request changed. Refresh and try again'));
+        await expect(
+          service.updateStatus(42, { status: ServiceRequestStatus.COMPLETED }, userId),
+        ).rejects.toThrow(new ForbiddenException('Only the recipient can update this request'));
 
-      expect(requestRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
-        { id: 42, recipientUserId: 7, status: ServiceRequestStatus.SENT },
-        { status: ServiceRequestStatus.ACCEPTED },
-      );
-      expect(statusRequest.status).toBe(ServiceRequestStatus.SENT);
-    });
+        expect(requestRepositoryMock.update).not.toHaveBeenCalled();
+        expect(statusRequest.status).toBe(ServiceRequestStatus.ACCEPTED);
+      },
+    );
 
-    it('should allow the recorded recipient to decide on a request whose offering was deleted', async () => {
-      statusRequest.serviceOfferingId = null;
+    it.each([
+      { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.ACCEPTED },
+      { from: ServiceRequestStatus.ACCEPTED, to: ServiceRequestStatus.COMPLETED },
+    ])(
+      'should reject a stale $from to $to update when no row matches the original state',
+      async ({ from, to }) => {
+        statusRequest.status = from;
+        requestRepositoryMock.update.mockResolvedValue({ affected: 0 });
 
-      const result = await service.updateStatus(42, { status: ServiceRequestStatus.ACCEPTED }, 7);
+        await expect(service.updateStatus(42, { status: to }, 7)).rejects.toThrow(
+          new ConflictException('Service request changed. Refresh and try again'),
+        );
 
-      expect(result).toEqual(expectedResponse(ServiceRequestStatus.ACCEPTED, null));
-      expect(providerServiceMock.findOne).not.toHaveBeenCalled();
-      expect(offeringRepositoryMock.findOneBy).not.toHaveBeenCalled();
-      expect(requestRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
-        { id: 42, recipientUserId: 7, status: ServiceRequestStatus.SENT },
-        { status: ServiceRequestStatus.ACCEPTED },
-      );
-    });
+        expect(requestRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
+          { id: 42, recipientUserId: 7, status: from },
+          { status: to },
+        );
+        expect(statusRequest.status).toBe(from);
+      },
+    );
+
+    it.each([
+      { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.ACCEPTED },
+      { from: ServiceRequestStatus.ACCEPTED, to: ServiceRequestStatus.COMPLETED },
+    ])(
+      'should allow the recorded recipient to change $from to $to after offering deletion',
+      async ({ from, to }) => {
+        statusRequest.serviceOfferingId = null;
+        statusRequest.status = from;
+
+        const result = await service.updateStatus(42, { status: to }, 7);
+
+        expect(result).toEqual(expectedResponse(to, null));
+        expect(providerServiceMock.findOne).not.toHaveBeenCalled();
+        expect(offeringRepositoryMock.findOneBy).not.toHaveBeenCalled();
+        expect(requestRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
+          { id: 42, recipientUserId: 7, status: from },
+          { status: to },
+        );
+      },
+    );
 
     it('should update only status even if a caller supplies extra identities, message or snapshots', async () => {
       const forgedDto = {

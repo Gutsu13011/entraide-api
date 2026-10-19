@@ -32,8 +32,8 @@ User registration, login and a protected profile endpoint are available.
 Provider ownership and authorization are implemented for profile updates,
 deletion, and service offering creation, updates and deletion. Service request
 creation, private sent and received lists, and recipient-only status updates
-are available. Recipients can mark a request as read, accept it or reject it.
-Reply messages and the completion workflow are planned.
+are available. Recipients can mark a request as read, accept it or reject it,
+and mark an accepted request as completed. Reply messages are planned.
 The current version is intended for local development and demonstration.
 
 ## Requirements
@@ -207,7 +207,16 @@ Allowed transitions are:
 
 - `SENT` → `READ`, `ACCEPTED` or `REJECTED`.
 - `READ` → `ACCEPTED` or `REJECTED`.
-- `ACCEPTED` and `REJECTED` are final in the current workflow.
+- `ACCEPTED` → `COMPLETED`.
+- `REJECTED` and `COMPLETED` are final in the current workflow.
+
+To finish a service, the recorded recipient sends `{ "status": "COMPLETED" }`
+to the same PATCH endpoint. Only an accepted request can be completed:
+`SENT` or `READ` cannot transition directly to `COMPLETED`. The requester
+cannot mark it as completed. Sent and received lists include the completed
+status in their responses. This transition remains available if the original
+offering or provider profile was deleted. Completion currently records only
+the status; it does not add a completion timestamp or a review.
 
 Missing or invalid statuses, including `SENT` as a target, and extra body fields
 return `400 Bad Request`. A missing request returns `404 Not Found`.
@@ -315,6 +324,6 @@ migrations, unit tests and end-to-end tests.
 
 ## Planned improvements
 
-- Service request reply messages and completion workflow
-- Recipient status actions in the Angular frontend
+- Service request reply messages
+- Completion status display and action in the Angular frontend
 - Reviews linked to completed service requests

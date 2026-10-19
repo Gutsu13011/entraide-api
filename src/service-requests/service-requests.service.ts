@@ -107,8 +107,9 @@ export class ServiceRequestsService {
         ServiceRequestStatus.ACCEPTED,
       ],
       [ServiceRequestStatus.READ]: [ServiceRequestStatus.ACCEPTED, ServiceRequestStatus.REJECTED],
-      [ServiceRequestStatus.ACCEPTED]: [],
+      [ServiceRequestStatus.ACCEPTED]: [ServiceRequestStatus.COMPLETED],
       [ServiceRequestStatus.REJECTED]: [],
+      [ServiceRequestStatus.COMPLETED]: [],
     };
     const nextStatus = updateServiceRequestStatusDto.status;
     const allowedStatus = allowedTransitions[serviceRequest.status] ?? [];

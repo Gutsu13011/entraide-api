@@ -3,4 +3,5 @@ export enum ServiceRequestStatus {
   READ = 'READ',
   ACCEPTED = 'ACCEPTED',
   REJECTED = 'REJECTED',
+  COMPLETED = 'COMPLETED',
 }

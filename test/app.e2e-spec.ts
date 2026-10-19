@@ -2174,13 +2174,16 @@ describe('AppController (e2e)', () => {
       expect(await repository.count()).toBe(1);
     }
 
-    it.each([
+    const validTransitions = [
       { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.READ },
       { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.ACCEPTED },
       { from: ServiceRequestStatus.SENT, to: ServiceRequestStatus.REJECTED },
       { from: ServiceRequestStatus.READ, to: ServiceRequestStatus.ACCEPTED },
       { from: ServiceRequestStatus.READ, to: ServiceRequestStatus.REJECTED },
-    ])(
+      { from: ServiceRequestStatus.ACCEPTED, to: ServiceRequestStatus.COMPLETED },
+    ];
+
+    it.each(validTransitions)(
       `${route} (PATCH) should allow the recipient to change $from to $to without changing other data`,
       async ({ from, to }) => {
         await repository.update(original.id, { status: from });
@@ -2202,16 +2205,23 @@ describe('AppController (e2e)', () => {
       },
     );
 
-    it.each([
-      { from: ServiceRequestStatus.READ, to: ServiceRequestStatus.READ },
-      ...[ServiceRequestStatus.ACCEPTED, ServiceRequestStatus.REJECTED].flatMap((from) =>
+    it.each(
+      Object.values(ServiceRequestStatus).flatMap((from) =>
         [
           ServiceRequestStatus.READ,
           ServiceRequestStatus.ACCEPTED,
           ServiceRequestStatus.REJECTED,
-        ].map((to) => ({ from, to })),
+          ServiceRequestStatus.COMPLETED,
+        ]
+          .filter(
+            (to) =>
+              !validTransitions.some(
+                (transition) => transition.from === from && transition.to === to,
+              ),
+          )
+          .map((to) => ({ from, to })),
       ),
-    ])(
+    )(
       `${route} (PATCH) should reject the transition $from to $to with 409`,
       async ({ from, to }) => {
         await repository.update(original.id, { status: from });
@@ -2230,6 +2240,18 @@ describe('AppController (e2e)', () => {
         await patch({ status: ServiceRequestStatus.ACCEPTED }, token).expect(403);
 
         await expectStored();
+      },
+    );
+
+    it.each(['requester', 'unrelated'] as const)(
+      `${route} (PATCH) should prevent the %s from completing an accepted request`,
+      async (actor) => {
+        await repository.update(original.id, { status: ServiceRequestStatus.ACCEPTED });
+        const token = actor === 'requester' ? requesterToken : unrelatedToken;
+
+        await patch({ status: ServiceRequestStatus.COMPLETED }, token).expect(403);
+
+        await expectStored(ServiceRequestStatus.ACCEPTED);
       },
     );
 
@@ -2257,7 +2279,7 @@ describe('AppController (e2e)', () => {
       { label: 'a missing status', body: {} },
       { label: 'a null status', body: { status: null } },
       { label: 'a numeric status', body: { status: 1 } },
-      { label: 'an unknown status', body: { status: 'COMPLETED' } },
+      { label: 'an unknown status', body: { status: 'CANCELLED' } },
       { label: 'a lowercase status', body: { status: 'accepted' } },
       { label: 'the initial SENT status', body: { status: ServiceRequestStatus.SENT } },
       { label: 'an array status', body: { status: [ServiceRequestStatus.ACCEPTED] } },
@@ -2295,7 +2317,7 @@ describe('AppController (e2e)', () => {
     });
 
     it.each(['offering', 'provider'] as const)(
-      `${route} (PATCH) should allow the recorded recipient to accept after %s deletion`,
+      `${route} (PATCH) should allow the recorded recipient to accept and complete after %s deletion`,
       async (deleted) => {
         const url =
           deleted === 'offering'
@@ -2314,11 +2336,18 @@ describe('AppController (e2e)', () => {
           status: ServiceRequestStatus.ACCEPTED,
         });
         await expectStored(ServiceRequestStatus.ACCEPTED, null);
+        const completed = await patch({ status: ServiceRequestStatus.COMPLETED }).expect(200);
+        expect(completed.body).toEqual({
+          ...originalResponse,
+          serviceOfferingId: null,
+          status: ServiceRequestStatus.COMPLETED,
+        });
+        await expectStored(ServiceRequestStatus.COMPLETED, null);
       },
     );
 
     it.each(['sent', 'received'] as const)(
-      '/service-requests/%s (GET) should preserve SENT on consultation and reflect explicit status updates',
+      '/service-requests/%s (GET) should preserve SENT on consultation and reflect the full completion workflow',
       async (direction) => {
         const token = direction === 'sent' ? requesterToken : recipientToken;
         const before = await request(app.getHttpServer())
@@ -2336,45 +2365,70 @@ describe('AppController (e2e)', () => {
 
         expect(after.body).toEqual([{ ...originalResponse, status: ServiceRequestStatus.READ }]);
         await expectStored(ServiceRequestStatus.READ);
+
+        await patch({ status: ServiceRequestStatus.ACCEPTED }).expect(200);
+        await patch({ status: ServiceRequestStatus.COMPLETED }).expect(200);
+        const completed = await request(app.getHttpServer())
+          .get(`/service-requests/${direction}`)
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        expect(completed.body).toEqual([
+          { ...originalResponse, status: ServiceRequestStatus.COMPLETED },
+        ]);
+        await expectStored(ServiceRequestStatus.COMPLETED);
       },
     );
 
-    it(`${route} (PATCH) should let only one concurrent accept or reject decision succeed`, async () => {
-      const realFindOne = repository.findOne.bind(repository);
-      let readCount = 0;
-      let releaseReads!: () => void;
-      const bothRead = new Promise<void>((resolve) => {
-        releaseReads = resolve;
-      });
-      // Keep the real database reads and writes: delay both reads until they saw SENT.
-      const spy = vi.spyOn(repository, 'findOne').mockImplementation(async (options) => {
-        const row = await realFindOne(options);
-        readCount += 1;
-        if (readCount === 2) releaseReads();
-        await bothRead;
-        return row;
-      });
-      try {
-        const decisions = [ServiceRequestStatus.ACCEPTED, ServiceRequestStatus.REJECTED];
-        const responses = await Promise.all(decisions.map((status) => patch({ status })));
-
-        expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
-        const winnerIndex = responses.findIndex((response) => response.status === 200);
-        expect(responses[winnerIndex].body).toEqual({
-          ...originalResponse,
-          status: decisions[winnerIndex],
+    it.each([
+      {
+        label: 'accept or reject decisions',
+        from: ServiceRequestStatus.SENT,
+        decisions: [ServiceRequestStatus.ACCEPTED, ServiceRequestStatus.REJECTED],
+      },
+      {
+        label: 'completion attempts',
+        from: ServiceRequestStatus.ACCEPTED,
+        decisions: [ServiceRequestStatus.COMPLETED, ServiceRequestStatus.COMPLETED],
+      },
+    ])(
+      `${route} (PATCH) should let only one of two concurrent $label succeed`,
+      async ({ from, decisions }) => {
+        await repository.update(original.id, { status: from });
+        const realFindOne = repository.findOne.bind(repository);
+        let readCount = 0;
+        let releaseReads!: () => void;
+        const bothRead = new Promise<void>((resolve) => {
+          releaseReads = resolve;
         });
-        expect(responses[1 - winnerIndex].body.message).toBe(
-          'Service request changed. Refresh and try again',
-        );
-        // Restore before reading the final row, so this assertion does not use the barrier.
-        spy.mockRestore();
-        await expectStored(decisions[winnerIndex]);
-      } finally {
-        releaseReads();
-        spy.mockRestore();
-      }
-    });
+        // Keep real database reads and writes: both attempts must read the same initial status.
+        const spy = vi.spyOn(repository, 'findOne').mockImplementation(async (options) => {
+          const row = await realFindOne(options);
+          readCount += 1;
+          if (readCount === 2) releaseReads();
+          await bothRead;
+          return row;
+        });
+        try {
+          const responses = await Promise.all(decisions.map((status) => patch({ status })));
+
+          expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+          const winnerIndex = responses.findIndex((response) => response.status === 200);
+          expect(responses[winnerIndex].body).toEqual({
+            ...originalResponse,
+            status: decisions[winnerIndex],
+          });
+          expect(responses[1 - winnerIndex].body.message).toBe(
+            'Service request changed. Refresh and try again',
+          );
+          // Restore before reading the final row, so this assertion does not use the barrier.
+          spy.mockRestore();
+          await expectStored(decisions[winnerIndex]);
+        } finally {
+          releaseReads();
+          spy.mockRestore();
+        }
+      },
+    );
   });
 
   afterEach(async () => {
