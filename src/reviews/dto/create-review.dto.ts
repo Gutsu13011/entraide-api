@@ -2,10 +2,14 @@ import { IsInt, IsString, IsNotEmpty, Max, Min } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class CreateReviewDto {
-  @ApiProperty({ example: 'Alice Martin' })
-  @IsString()
-  @IsNotEmpty()
-  authorName: string;
+  @ApiProperty({
+    example: 41,
+    minimum: 1,
+    description: 'Identifier of the completed service request being reviewed',
+  })
+  @IsInt()
+  @Min(1)
+  serviceRequestId: number;
 
   @ApiProperty({ example: 2, minimum: 1, maximum: 5 })
   @IsInt()

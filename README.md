@@ -14,7 +14,7 @@ service.
 
 - Service provider management
 - Pagination, search, filtering and sorting
-- Provider reviews
+- Provider reviews tied to completed service requests, with requester-only creation and one review per request
 - Multiple service offerings per provider, with free or hourly pricing
 - Authenticated service requests with private sent and received lists, historical offering snapshots and recipient-only status updates
 - SQLite persistence with TypeORM migrations
@@ -33,7 +33,9 @@ Provider ownership and authorization are implemented for profile updates,
 deletion, and service offering creation, updates and deletion. Service request
 creation, private sent and received lists, and recipient-only status updates
 are available. Recipients can mark a request as read, accept it or reject it,
-and mark an accepted request as completed. Reply messages are planned.
+and mark an accepted request as completed. Requesters can review completed
+services, with one review per request and a public response that excludes
+private request links. Reply messages are planned.
 The current version is intended for local development and demonstration.
 
 ## Requirements
@@ -128,8 +130,8 @@ A second profile creation for the same account returns `409 Conflict`.
 
 Only the profile owner can update or delete it, or create, update and delete its service offerings.
 Attempts by another authenticated user return `403 Forbidden`.
-Review creation currently remains available to authenticated users; linking
-reviews to completed service requests is planned.
+Review creation is restricted to the requester of a completed service request,
+as described in the reviews section below.
 
 Existing and demo profiles have no owner (`ownerUserId: null`). They remain
 publicly readable, but authenticated users cannot update or delete them, or
@@ -243,6 +245,51 @@ A status update leaves the message, participants, creation date and offering
 snapshots unchanged. Sent and received GET endpoints never change the status;
 marking a request as read requires an explicit PATCH request.
 
+## Reviews
+
+- `POST /service-providers/:serviceProviderId/reviews` creates an authenticated review.
+- `GET /service-providers/:serviceProviderId/reviews` publicly lists reviews.
+- `GET /service-providers/:serviceProviderId/reviews/summary` publicly returns the review count and average rating.
+
+The creation body contains the completed request identifier, a rating from 1 to 5,
+and a non-empty comment:
+
+```json
+{
+  "serviceRequestId": 41,
+  "rating": 5,
+  "comment": "Excellent service"
+}
+```
+
+The request must belong to the provider specified in the URL, have status
+`COMPLETED`, and have been sent by the authenticated account. The API derives
+`authorName` from that requester's account. Client-supplied author names,
+requester identifiers and provider identifiers in the body are rejected.
+
+A missing provider or a request not found for that provider returns `404 Not Found`.
+An authenticated account other than the requester, including the recipient,
+receives `403 Forbidden`. A request that is not completed or already has a review
+returns `409 Conflict`. A unique database index also prevents duplicate reviews
+when submissions overlap; the competing insertion returns the same conflict.
+Different completed requests to the same provider may each receive a review.
+
+Creation and list responses contain only `id`, `authorName`, `rating`, `comment`,
+`createdAt` and `serviceProviderId`. The request identifier and internal relations
+are retained in storage where applicable and excluded from public responses.
+Creating a review leaves the associated request unchanged.
+
+The `LinkReviewsToServiceRequests` migration preserves legacy and demonstration
+reviews with a null request link. These reviews remain publicly readable and
+included in rating summaries. New reviews submitted through the API require a
+completed request. Demo reviews use a separate validation DTO.
+
+Deleting an offering preserves the request's provider link, so a completed
+request can still be reviewed. Deleting the provider removes its reviews and
+clears the provider link on retained requests. Recreating a profile for the same
+account does not make these old requests eligible for reviews on the new profile.
+A request referenced by a review cannot be deleted while that review exists.
+
 ## Demo data
 
 To populate an empty local database with 12 fictional service providers,
@@ -339,5 +386,4 @@ migrations, unit tests and end-to-end tests.
 ## Planned improvements
 
 - Service request reply messages
-- Completion status display and action in the Angular frontend
-- Reviews linked to completed service requests
+- Frontend integration of completed-request reviews

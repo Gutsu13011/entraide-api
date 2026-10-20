@@ -6,7 +6,7 @@ import { demoServiceProviders } from './demo-service-providers.js';
 import dataSource from './data-source.js';
 import { ServiceProvider } from '../service-providers/service-provider.entity.js';
 import { demoReviews } from './demo-reviews.js';
-import { CreateReviewDto } from '../reviews/dto/create-review.dto.js';
+import { DemoReviewDto } from './dto/demo-review.dto.js';
 import { Review } from '../reviews/review.entity.js';
 import { demoServiceOfferings } from './demo-service-offerings.js';
 import { CreateServiceOfferingDto } from '../service-offerings/dto/create-service-offering.dto.js';
@@ -15,7 +15,7 @@ import { ServiceOffering } from '../service-offerings/service-offering.entity.js
 async function seed() {
   const providers = plainToInstance(CreateServiceProviderDto, demoServiceProviders);
   const reviews = plainToInstance(
-    CreateReviewDto,
+    DemoReviewDto,
     demoReviews.map(({ review }) => review),
   );
   const offerings = plainToInstance(

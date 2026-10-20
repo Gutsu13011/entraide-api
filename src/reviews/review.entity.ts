@@ -7,8 +7,10 @@ import {
   ManyToOne,
   type Relation,
   Index,
+  OneToOne,
 } from 'typeorm';
 import { ServiceProvider } from '../service-providers/service-provider.entity.js';
+import { ServiceRequest } from '../service-requests/service-request.entity.js';
 
 @Entity('reviews')
 export class Review {
@@ -39,4 +41,11 @@ export class Review {
     foreignKeyConstraintName: 'FK_reviews_service_provider',
   })
   serviceProvider: Relation<ServiceProvider>;
+
+  @Column('integer', { nullable: true })
+  serviceRequestId: number | null;
+
+  @OneToOne(() => ServiceRequest, { nullable: true, onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'serviceRequestId', foreignKeyConstraintName: 'FK_reviews_service_request' })
+  serviceRequest: Relation<ServiceRequest> | null;
 }

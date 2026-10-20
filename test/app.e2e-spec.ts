@@ -13,6 +13,7 @@ import argon2 from 'argon2';
 import { JwtService } from '@nestjs/jwt';
 import { ServiceRequest } from '../src/service-requests/service-request.entity.js';
 import { ServiceRequestStatus } from '../src/service-requests/service-request-status.enum.js';
+import { Review } from '../src/reviews/review.entity.js';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
@@ -630,95 +631,380 @@ describe('AppController (e2e)', () => {
       });
   });
 
-  it('/service-providers/1/reviews (POST)', async () => {
-    const createReviewDto = {
-      authorName: 'Alice Martin',
-      rating: 5,
-      comment: 'Excellent service',
-    };
-    const accessToken = await getAccessToken();
+  describe('reviews for completed service requests', () => {
+    const route = '/service-providers/:serviceProviderId/reviews';
+    let ownerToken: string;
+    let requesterToken: string;
+    let providerId: number;
+    let offeringId: number;
+    let original: ServiceRequest;
+    let reviewsRepository: Repository<Review>;
+    let requestsRepository: Repository<ServiceRequest>;
 
-    return request(app.getHttpServer())
-      .post('/service-providers/1/reviews')
-      .send(createReviewDto)
-      .set('Authorization', `Bearer ${accessToken}`)
-      .expect(201)
-      .expect((response) => {
-        expect(response.body).toMatchObject({
-          id: 1,
-          ...createReviewDto,
-          serviceProviderId: 1,
-          createdAt: expect.any(String),
-        });
+    async function completeRequest() {
+      const created = await request(app.getHttpServer())
+        .post(`/service-providers/${providerId}/service-offerings/${offeringId}/service-requests`)
+        .set('Authorization', `Bearer ${requesterToken}`)
+        .send({ message: 'Bonjour, je souhaite faire repeindre ma chambre.' })
+        .expect(201);
+      for (const status of [ServiceRequestStatus.ACCEPTED, ServiceRequestStatus.COMPLETED]) {
+        await request(app.getHttpServer())
+          .patch(`/service-requests/${created.body.id}/status`)
+          .set('Authorization', `Bearer ${ownerToken}`)
+          .send({ status })
+          .expect(200);
+      }
+      return requestsRepository.findOneByOrFail({ id: created.body.id });
+    }
+
+    beforeEach(async () => {
+      ownerToken = await getAccessToken('review-owner@example.com');
+      requesterToken = await getAccessToken('review-requester@example.com');
+      const requesterUser = await app.get(UsersService).findByEmail('review-requester@example.com');
+      await app.get<Repository<User>>(getRepositoryToken(User)).update(requesterUser!.id, {
+        firstName: 'Bruno',
+        lastName: 'Leroy',
       });
-  });
-
-  it('/service-providers/1/reviews (GET)', async () => {
-    const createReviewDto = {
-      authorName: 'Alice Martin',
-      rating: 5,
-      comment: 'Excellent service',
-    };
-    const accessToken = await getAccessToken();
-
-    await request(app.getHttpServer())
-      .post('/service-providers/1/reviews')
-      .send(createReviewDto)
-      .set('Authorization', `Bearer ${accessToken}`)
-      .expect(201);
-
-    return request(app.getHttpServer())
-      .get('/service-providers/1/reviews')
-      .expect(200)
-      .expect((response) => {
-        expect(response.body).toHaveLength(1);
-        expect(response.body[0]).toMatchObject({
-          id: 1,
-          ...createReviewDto,
-          serviceProviderId: 1,
-          createdAt: expect.any(String),
+      const provider = await request(app.getHttpServer())
+        .post('/service-providers')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({
+          firstName: 'Alice',
+          lastName: 'Martin',
+          profession: 'Peintre',
+          city: 'Paris',
+          description: 'Peinture intérieure et extérieure.',
+          hourlyRate: 35,
+          available: true,
+          imageUrl: '',
+        })
+        .expect(201);
+      providerId = provider.body.id;
+      expect(
+        await app
+          .get<Repository<ServiceProvider>>(getRepositoryToken(ServiceProvider))
+          .findOneBy({ id: providerId }),
+      ).toMatchObject({ id: providerId });
+      const offering = await request(app.getHttpServer())
+        .post(`/service-providers/${providerId}/service-offerings`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({
+          title: 'Peinture',
+          description: 'Peinture intérieure.',
+          pricingType: ServicePricingType.HOURLY,
+          hourlyRate: 35,
+        })
+        .expect((response) => {
+          expect(
+            response.status,
+            `Offering fixture for provider ${providerId}: ${JSON.stringify(response.body)}`,
+          ).toBe(201);
         });
-      });
-  });
+      offeringId = offering.body.id;
+      reviewsRepository = app.get<Repository<Review>>(getRepositoryToken(Review));
+      requestsRepository = app.get<Repository<ServiceRequest>>(getRepositoryToken(ServiceRequest));
+      original = await completeRequest();
+    });
 
-  it('/service-providers/1/reviews (POST) should return 400 for an invalid rating', async () => {
-    const accessToken = await getAccessToken();
+    function reviewBody() {
+      return { serviceRequestId: original.id, rating: 5, comment: 'Excellent service' };
+    }
 
-    return request(app.getHttpServer())
-      .post('/service-providers/1/reviews')
-      .send({
-        authorName: 'Alice Martin',
-        rating: 6,
-        comment: 'Excellent service',
-      })
-      .set('Authorization', `Bearer ${accessToken}`)
-      .expect(400)
-      .expect((response) => {
-        expect(response.body).toMatchObject({
-          error: 'Bad Request',
-          statusCode: 400,
-        });
-        expect(response.body.message).toContain('rating must not be greater than 5');
-      });
-  });
+    function postReview(
+      body: object = reviewBody(),
+      token = requesterToken,
+      provider = providerId,
+    ) {
+      return request(app.getHttpServer())
+        .post(`/service-providers/${provider}/reviews`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(body);
+    }
 
-  it('/service-providers/999/reviews (POST) should return 404', async () => {
-    const accessToken = await getAccessToken();
+    async function expectNoReview() {
+      expect(await reviewsRepository.count()).toBe(0);
+      expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+    }
 
-    return request(app.getHttpServer())
-      .post('/service-providers/999/reviews')
-      .set('Authorization', `Bearer ${accessToken}`)
-      .send({
-        authorName: 'Alice Martin',
+    it(`${route} (POST) should create one review with the requester account name without modifying the completed request`, async () => {
+      const response = await postReview().expect(201);
+
+      expect(response.body).toEqual({
+        id: expect.any(Number),
         rating: 5,
         comment: 'Excellent service',
-      })
-      .expect(404)
-      .expect({
-        message: 'Service provider with id 999 not found',
-        error: 'Not Found',
-        statusCode: 404,
+        serviceProviderId: providerId,
+        authorName: 'Bruno Leroy',
+        createdAt: expect.any(String),
       });
+      expect(response.body).not.toHaveProperty('requesterUser');
+      expect(response.body).not.toHaveProperty('serviceRequest');
+      expect(await reviewsRepository.findOneByOrFail({ id: response.body.id })).toEqual({
+        id: response.body.id,
+        ...reviewBody(),
+        serviceProviderId: providerId,
+        authorName: 'Bruno Leroy',
+        createdAt: new Date(response.body.createdAt),
+      });
+      expect(await reviewsRepository.count()).toBe(1);
+      expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+    });
+
+    it(`${route} (GET) should publicly list only the six public review fields`, async () => {
+      const created = await postReview().expect(201);
+
+      const response = await request(app.getHttpServer())
+        .get(`/service-providers/${providerId}/reviews`)
+        .expect(200);
+
+      expect(response.body).toEqual([
+        {
+          id: created.body.id,
+          authorName: 'Bruno Leroy',
+          rating: 5,
+          comment: 'Excellent service',
+          createdAt: created.body.createdAt,
+          serviceProviderId: providerId,
+        },
+      ]);
+    });
+
+    it(`${route} (POST) should return 400 for an invalid rating`, async () => {
+      const response = await postReview({ ...reviewBody(), rating: 6 }).expect(400);
+      expect(response.body.message).toContain('rating must not be greater than 5');
+      await expectNoReview();
+    });
+
+    it.each([
+      { label: 'missing', value: undefined },
+      { label: 'null', value: null },
+      { label: 'zero', value: 0 },
+      { label: 'negative', value: -1 },
+      { label: 'fractional', value: 1.5 },
+      { label: 'a string', value: '1' },
+    ])(`${route} (POST) should return 400 when serviceRequestId is $label`, async ({ value }) => {
+      const response = await postReview({ ...reviewBody(), serviceRequestId: value }).expect(400);
+      expect(response.body.message).toEqual(
+        expect.arrayContaining([expect.stringContaining('serviceRequestId')]),
+      );
+      await expectNoReview();
+    });
+
+    it.each([
+      { field: 'authorName', value: 'Auteur falsifié' },
+      { field: 'requesterUserId', value: 999 },
+      { field: 'serviceProviderId', value: 999 },
+    ])(
+      `${route} (POST) should reject the client-controlled field $field`,
+      async ({ field, value }) => {
+        const response = await postReview({ ...reviewBody(), [field]: value }).expect(400);
+        expect(response.body.message).toContain(`property ${field} should not exist`);
+        await expectNoReview();
+      },
+    );
+
+    it(`${route} (POST) should return 404 for a missing provider`, async () => {
+      await postReview(reviewBody(), requesterToken, 999).expect(404);
+      await expectNoReview();
+    });
+
+    it(`${route} (POST) should return 404 for a missing request`, async () => {
+      await postReview({ ...reviewBody(), serviceRequestId: 999 }).expect(404);
+      await expectNoReview();
+    });
+
+    it(`${route} (POST) should return 404 when the request belongs to another provider`, async () => {
+      const response = await postReview(reviewBody(), requesterToken, 2).expect(404);
+      expect(response.body.message).toBe('Service request not found for this service provider');
+      await expectNoReview();
+    });
+
+    it.each(['recipient', 'unrelated user'])(
+      `${route} (POST) should forbid the %s from reviewing the request`,
+      async (actor) => {
+        const token =
+          actor === 'recipient' ? ownerToken : await getAccessToken('other-reviewer@example.com');
+        const response = await postReview(reviewBody(), token).expect(403);
+        expect(response.body.message).toBe('Only the requester can review this service');
+        await expectNoReview();
+      },
+    );
+
+    it.each([
+      ServiceRequestStatus.SENT,
+      ServiceRequestStatus.READ,
+      ServiceRequestStatus.ACCEPTED,
+      ServiceRequestStatus.REJECTED,
+    ])(`${route} (POST) should reject a request with status %s`, async (status) => {
+      await requestsRepository.update(original.id, { status });
+      const response = await postReview().expect(409);
+      expect(response.body.message).toBe('Only completed service requests can be reviewed');
+      expect(await reviewsRepository.count()).toBe(0);
+      expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual({
+        ...original,
+        status,
+      });
+    });
+
+    it(`${route} (POST) should return 409 for an already reviewed request and preserve the original review`, async () => {
+      const first = await postReview().expect(201);
+      const originalReview = await reviewsRepository.findOneByOrFail({ id: first.body.id });
+      const response = await postReview({
+        ...reviewBody(),
+        rating: 1,
+        comment: 'Deuxième avis',
+      }).expect(409);
+
+      expect(response.body.message).toBe('This service request has already been reviewed');
+      expect(await reviewsRepository.find()).toEqual([originalReview]);
+    });
+
+    it(`${route} (POST) should allow separate reviews for different completed requests to the same provider`, async () => {
+      await postReview().expect(201);
+      const secondRequest = await completeRequest();
+      await postReview({ ...reviewBody(), serviceRequestId: secondRequest.id }).expect(201);
+
+      const reviews = await reviewsRepository.find({ order: { id: 'ASC' } });
+      expect(reviews.map((review) => review.serviceRequestId)).toEqual([
+        original.id,
+        secondRequest.id,
+      ]);
+      expect(reviews.every((review) => review.serviceProviderId === providerId)).toBe(true);
+    });
+
+    it(`${route} (POST) should return 409 when a competing review is inserted after the existence check`, async () => {
+      const realExistsBy = reviewsRepository.existsBy.bind(reviewsRepository);
+      const existenceCheck = vi
+        .spyOn(reviewsRepository, 'existsBy')
+        .mockImplementationOnce(async (criteria) => {
+          const exists = await realExistsBy(criteria);
+          expect(exists).toBe(false);
+          await reviewsRepository.insert({
+            ...reviewBody(),
+            serviceProviderId: providerId,
+            authorName: 'Bruno Leroy',
+            comment: 'Avis concurrent conservé',
+          });
+          return exists;
+        });
+
+      try {
+        const response = await postReview().expect(409);
+        expect(response.body.message).toBe('This service request has already been reviewed');
+        expect(existenceCheck).toHaveBeenCalledOnce();
+        const stored = await reviewsRepository.find();
+        expect(stored).toHaveLength(1);
+        expect(stored[0]).toMatchObject({
+          serviceRequestId: original.id,
+          comment: 'Avis concurrent conservé',
+        });
+      } finally {
+        existenceCheck.mockRestore();
+      }
+    });
+
+    it(`${route} (POST) should allow reviewing a completed request after its offering is deleted`, async () => {
+      await request(app.getHttpServer())
+        .delete(`/service-providers/${providerId}/service-offerings/${offeringId}`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(204);
+
+      await postReview().expect(201);
+      expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual({
+        ...original,
+        serviceOfferingId: null,
+      });
+      expect(await reviewsRepository.count()).toBe(1);
+    });
+
+    it(`${route} (POST) should not attach an old request to a recreated provider profile`, async () => {
+      await request(app.getHttpServer())
+        .delete(`/service-providers/${providerId}`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .expect(204);
+      const recreated = await request(app.getHttpServer())
+        .post('/service-providers')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({
+          firstName: 'Alice',
+          lastName: 'Martin',
+          profession: 'Peintre',
+          city: 'Paris',
+          description: 'Nouvelle fiche.',
+          hourlyRate: 35,
+          available: true,
+          imageUrl: '',
+        })
+        .expect(201);
+
+      await postReview(reviewBody(), requesterToken, recreated.body.id).expect(404);
+      expect(await reviewsRepository.count()).toBe(0);
+      expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual({
+        ...original,
+        serviceProviderId: null,
+        serviceOfferingId: null,
+      });
+    });
+
+    it.each(['invalid', 'expired'])(
+      `${route} (POST) should reject an %s bearer token`,
+      async (kind) => {
+        const token =
+          kind === 'invalid'
+            ? 'invalid-token'
+            : await app
+                .get(JwtService)
+                .signAsync({ sub: String(original.requesterUserId) }, { expiresIn: -1 });
+        await postReview(reviewBody(), token).expect(401);
+        await expectNoReview();
+      },
+    );
+
+    it('/service-providers/:serviceProviderId/reviews/summary (GET) should return an empty summary', async () => {
+      await request(app.getHttpServer())
+        .get(`/service-providers/${providerId}/reviews/summary`)
+        .expect(200)
+        .expect({ reviewCount: 0, averageRating: null });
+    });
+
+    it('/service-providers/:serviceProviderId/reviews/summary (GET) should return a rounded average across distinct completed requests', async () => {
+      for (const [index, rating] of [5, 4, 2].entries()) {
+        const serviceRequest = index === 0 ? original : await completeRequest();
+        await postReview({ ...reviewBody(), serviceRequestId: serviceRequest.id, rating }).expect(
+          201,
+        );
+      }
+
+      await request(app.getHttpServer())
+        .get(`/service-providers/${providerId}/reviews/summary`)
+        .expect(200)
+        .expect({ reviewCount: 3, averageRating: 3.7 });
+    });
+
+    it(`${route} (GET) should preserve public access to legacy reviews without an associated request`, async () => {
+      await reviewsRepository.save({
+        authorName: 'Auteur historique',
+        rating: 4,
+        comment: 'Ancien avis',
+        serviceProviderId: providerId,
+        serviceRequestId: null,
+      });
+
+      const response = await request(app.getHttpServer())
+        .get(`/service-providers/${providerId}/reviews`)
+        .expect(200);
+
+      expect(response.body).toEqual([
+        {
+          id: expect.any(Number),
+          authorName: 'Auteur historique',
+          rating: 4,
+          comment: 'Ancien avis',
+          createdAt: expect.any(String),
+          serviceProviderId: providerId,
+        },
+      ]);
+    });
   });
 
   it('/service-providers/999/reviews (GET) should return 404', () => {
@@ -737,40 +1023,6 @@ describe('AppController (e2e)', () => {
         message: 'Validation failed (numeric string is expected)',
         error: 'Bad Request',
         statusCode: 400,
-      });
-  });
-
-  it('/service-providers/1/reviews/summary (GET) should return an empty summary', () => {
-    return request(app.getHttpServer())
-      .get('/service-providers/1/reviews/summary')
-      .expect(200)
-      .expect({
-        reviewCount: 0,
-        averageRating: null,
-      });
-  });
-
-  it('/service-providers/1/reviews/summary (GET) should return a rounded average', async () => {
-    const accessToken = await getAccessToken();
-
-    for (const rating of [5, 4, 2]) {
-      await request(app.getHttpServer())
-        .post('/service-providers/1/reviews')
-        .set('Authorization', `Bearer ${accessToken}`)
-        .send({
-          authorName: 'Test Author',
-          rating,
-          comment: 'Test review',
-        })
-        .expect(201);
-    }
-
-    return request(app.getHttpServer())
-      .get('/service-providers/1/reviews/summary')
-      .expect(200)
-      .expect({
-        reviewCount: 3,
-        averageRating: 3.7,
       });
   });
 
@@ -1224,7 +1476,7 @@ describe('AppController (e2e)', () => {
   });
 
   it('/service-providers/1/reviews (POST) should reject requests without a bearer token', async () => {
-    const review = { authorName: 'Test Author', rating: 5, comment: 'Test review' };
+    const review = { serviceRequestId: 41, rating: 5, comment: 'Test review' };
 
     await request(app.getHttpServer())
       .post('/service-providers/1/reviews')

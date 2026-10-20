@@ -1,10 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ReviewsController } from './reviews.controller.js';
 import { ReviewsService } from './reviews.service.js';
-import { Review } from './review.entity.js';
+import type { ReviewResponseDto } from './dto/review-response.dto.js';
 import type { CreateReviewDto } from './dto/create-review.dto.js';
 import type { ReviewSummaryDto } from './dto/review-summary.dto.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import type { Request } from 'express';
 
 describe('ReviewsController', () => {
   let controller: ReviewsController;
@@ -34,7 +35,7 @@ describe('ReviewsController', () => {
   describe('findAll', () => {
     it('should return reviews for a service provider', async () => {
       const serviceProviderId = 1;
-      const expectedReviews: Review[] = [];
+      const expectedReviews: ReviewResponseDto[] = [];
 
       reviewsServiceMock.findAllForServiceProvider.mockResolvedValue(expectedReviews);
 
@@ -46,25 +47,33 @@ describe('ReviewsController', () => {
   });
 
   describe('create', () => {
-    it('should create a review for a service provider', async () => {
+    it('should pass the review body and authenticated user id to the service', async () => {
       const serviceProviderId = 1;
       const createReviewDto: CreateReviewDto = {
-        authorName: 'Alice Martin',
+        serviceRequestId: 41,
         rating: 5,
         comment: 'Excellent service',
       };
-      const expectedReview = Object.assign(new Review(), {
+      const expectedReview: ReviewResponseDto = {
         id: 1,
-        ...createReviewDto,
+        rating: createReviewDto.rating,
+        comment: createReviewDto.comment,
+        authorName: 'Alice Martin',
         serviceProviderId,
         createdAt: new Date(),
-      });
+      };
 
       reviewsServiceMock.create.mockResolvedValue(expectedReview);
 
-      const result = await controller.create(serviceProviderId, createReviewDto);
+      const userId = 7;
+      const request = { user: { id: userId } } as Request & { user: { id: number } };
+      const result = await controller.create(serviceProviderId, createReviewDto, request);
 
-      expect(reviewsServiceMock.create).toHaveBeenCalledWith(serviceProviderId, createReviewDto);
+      expect(reviewsServiceMock.create).toHaveBeenCalledExactlyOnceWith(
+        serviceProviderId,
+        createReviewDto,
+        userId,
+      );
       expect(result).toBe(expectedReview);
     });
   });

@@ -22,6 +22,7 @@ import { AddServiceProviderOwner1791272307897 } from './database/migrations/1791
 import { ServiceRequestsModule } from './service-requests/service-requests.module.js';
 import { CreateServiceRequestsTable1791550235362 } from './database/migrations/1791550235362-CreateServiceRequestsTable.js';
 import { AddServiceRequestProvider1792423748325 } from './database/migrations/1792423748325-AddServiceRequestProvider.js';
+import { LinkReviewsToServiceRequests1792425147989 } from './database/migrations/1792425147989-LinkReviewsToServiceRequests.js';
 
 const testMigrations = [
   InitialSchema1789026143459,
@@ -32,6 +33,7 @@ const testMigrations = [
   AddServiceProviderOwner1791272307897,
   CreateServiceRequestsTable1791550235362,
   AddServiceRequestProvider1792423748325,
+  LinkReviewsToServiceRequests1792425147989,
 ];
 @Module({
   imports: [

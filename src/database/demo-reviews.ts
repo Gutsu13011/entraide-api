@@ -1,8 +1,8 @@
-import type { CreateReviewDto } from '../reviews/dto/create-review.dto.js';
+import type { DemoReviewDto } from './dto/demo-review.dto.js';
 
 export interface DemoReview {
   serviceProviderIndex: number;
-  review: CreateReviewDto;
+  review: DemoReviewDto;
 }
 
 export const demoReviews: DemoReview[] = [
