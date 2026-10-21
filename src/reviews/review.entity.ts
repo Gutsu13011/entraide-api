@@ -45,7 +45,10 @@ export class Review {
   @Column('integer', { nullable: true })
   serviceRequestId: number | null;
 
-  @OneToOne(() => ServiceRequest, { nullable: true, onDelete: 'RESTRICT' })
+  @OneToOne(() => ServiceRequest, (serviceRequest) => serviceRequest.review, {
+    nullable: true,
+    onDelete: 'RESTRICT',
+  })
   @JoinColumn({ name: 'serviceRequestId', foreignKeyConstraintName: 'FK_reviews_service_request' })
   serviceRequest: Relation<ServiceRequest> | null;
 }

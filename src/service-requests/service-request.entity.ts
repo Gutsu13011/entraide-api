@@ -8,12 +8,14 @@ import {
   ManyToOne,
   type Relation,
   Check,
+  OneToOne,
 } from 'typeorm';
 import { ServiceRequestStatus } from './service-request-status.enum.js';
 import type { ServicePricingType } from '../service-offerings/service-pricing-type.enum.js';
 import { User } from '../users/user.entity.js';
 import { ServiceOffering } from '../service-offerings/service-offering.entity.js';
 import { ServiceProvider } from '../service-providers/service-provider.entity.js';
+import { Review } from '../reviews/review.entity.js';
 
 @Entity('service_requests')
 @Check(
@@ -80,4 +82,7 @@ export class ServiceRequest {
     foreignKeyConstraintName: 'FK_service_requests_service_provider',
   })
   serviceProvider: Relation<ServiceProvider> | null;
+
+  @OneToOne(() => Review, (review) => review.serviceRequest)
+  review?: Relation<Review | null>;
 }

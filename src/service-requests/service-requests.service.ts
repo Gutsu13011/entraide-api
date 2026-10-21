@@ -57,7 +57,7 @@ export class ServiceRequestsService {
     const savedRequest = await this.serviceRequestsRepository.save(serviceRequest);
     const requestWithParticipants = await this.serviceRequestsRepository.findOneOrFail({
       where: { id: savedRequest.id },
-      relations: { requesterUser: true, recipientUser: true },
+      relations: { requesterUser: true, recipientUser: true, review: true },
     });
 
     return this.toResponse(requestWithParticipants);
@@ -66,7 +66,7 @@ export class ServiceRequestsService {
   async findSentByUser(userId: number): Promise<ServiceRequestResponseDto[]> {
     const requests = await this.serviceRequestsRepository.find({
       where: { requesterUserId: userId },
-      relations: { requesterUser: true, recipientUser: true },
+      relations: { requesterUser: true, recipientUser: true, review: true },
       order: { createdAt: 'DESC', id: 'DESC' },
     });
 
@@ -76,7 +76,7 @@ export class ServiceRequestsService {
   async findReceivedByUser(userId: number): Promise<ServiceRequestResponseDto[]> {
     const requests = await this.serviceRequestsRepository.find({
       where: { recipientUserId: userId },
-      relations: { requesterUser: true, recipientUser: true },
+      relations: { requesterUser: true, recipientUser: true, review: true },
       order: { createdAt: 'DESC', id: 'DESC' },
     });
 
@@ -90,7 +90,7 @@ export class ServiceRequestsService {
   ): Promise<ServiceRequestResponseDto> {
     const serviceRequest = await this.serviceRequestsRepository.findOne({
       where: { id },
-      relations: { requesterUser: true, recipientUser: true },
+      relations: { requesterUser: true, recipientUser: true, review: true },
     });
 
     if (serviceRequest === null) {
@@ -136,6 +136,7 @@ export class ServiceRequestsService {
       id: serviceRequest.id,
       message: serviceRequest.message,
       status: serviceRequest.status,
+      hasReview: Boolean(serviceRequest.review),
       createdAt: serviceRequest.createdAt,
       requesterUserId: serviceRequest.requesterUserId,
       recipientUserId: serviceRequest.recipientUserId,

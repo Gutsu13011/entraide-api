@@ -8,6 +8,7 @@ import { ServiceOffering } from '../service-offerings/service-offering.entity.js
 import { ServicePricingType } from '../service-offerings/service-pricing-type.enum.js';
 import { ServiceProvidersService } from '../service-providers/service-providers.service.js';
 import type { CreateServiceRequestDto } from './dto/create-service-request.dto.js';
+import { Review } from '../reviews/review.entity.js';
 
 describe('ServiceRequestsService', () => {
   let service: ServiceRequestsService;
@@ -49,6 +50,7 @@ describe('ServiceRequestsService', () => {
     requestRepositoryMock.findOneOrFail.mockImplementation(async () => {
       const savedRequest = await requestRepositoryMock.save.mock.results[0].value;
       return Object.assign(new ServiceRequest(), savedRequest, {
+        review: null,
         internalNote: 'Internal value',
         requesterUser: {
           id: 8,
@@ -107,12 +109,13 @@ describe('ServiceRequestsService', () => {
       );
       expect(requestRepositoryMock.findOneOrFail).toHaveBeenCalledExactlyOnceWith({
         where: { id: 42 },
-        relations: { requesterUser: true, recipientUser: true },
+        relations: { requesterUser: true, recipientUser: true, review: true },
       });
       expect(result).toEqual({
         id: 42,
         message: dto.message,
         status: ServiceRequestStatus.SENT,
+        hasReview: false,
         createdAt: new Date('2026-10-10T09:30:00.000Z'),
         requesterUserId: 8,
         recipientUserId: 7,
@@ -211,7 +214,7 @@ describe('ServiceRequestsService', () => {
     expect(requestRepositoryMock.save).toHaveBeenCalledTimes(1);
     expect(requestRepositoryMock.findOneOrFail).toHaveBeenCalledExactlyOnceWith({
       where: { id: 42 },
-      relations: { requesterUser: true, recipientUser: true },
+      relations: { requesterUser: true, recipientUser: true, review: true },
     });
   });
 
@@ -219,17 +222,25 @@ describe('ServiceRequestsService', () => {
     [
       { method: 'findSentByUser' as const, field: 'requesterUserId' },
       { method: 'findReceivedByUser' as const, field: 'recipientUserId' },
-    ].flatMap((mode) => [1, null].map((serviceProviderId) => ({ ...mode, serviceProviderId }))),
+    ].flatMap((mode) =>
+      [1, null].flatMap((serviceProviderId) =>
+        (serviceProviderId === null ? [false] : [false, true]).map((hasReview) => ({
+          ...mode,
+          serviceProviderId,
+          hasReview,
+        })),
+      ),
+    ),
   )(
-    'should scope $method to the user and return provider link $serviceProviderId without private participant fields',
-    async ({ method, field, serviceProviderId }) => {
+    'should scope $method to the user and return provider link $serviceProviderId with hasReview $hasReview without leaking loaded relations',
+    async ({ method, field, serviceProviderId, hasReview }) => {
       const createdAt = new Date('2026-10-10T09:30:00.000Z');
       const requesterId = method === 'findSentByUser' ? 8 : 7;
       const recipientId = method === 'findReceivedByUser' ? 8 : 7;
       const storedRequest = Object.assign(new ServiceRequest(), {
         id: 42,
         message: dto.message,
-        status: ServiceRequestStatus.SENT,
+        status: ServiceRequestStatus.COMPLETED,
         createdAt,
         requesterUserId: requesterId,
         recipientUserId: recipientId,
@@ -238,6 +249,17 @@ describe('ServiceRequestsService', () => {
         offeringTitleSnapshot: 'Peinture',
         offeringPricingTypeSnapshot: ServicePricingType.HOURLY,
         offeringHourlyRateSnapshot: 30,
+        review: hasReview
+          ? Object.assign(new Review(), {
+              id: 10,
+              serviceRequestId: 42,
+              serviceProviderId,
+              authorName: 'Alice Martin',
+              rating: 5,
+              comment: 'Loaded review content must not be returned here.',
+              createdAt,
+            })
+          : null,
         internalNote: 'Internal value',
         requesterUser: {
           id: requesterId,
@@ -262,14 +284,15 @@ describe('ServiceRequestsService', () => {
 
       expect(requestRepositoryMock.find).toHaveBeenCalledExactlyOnceWith({
         where: { [field]: 8 },
-        relations: { requesterUser: true, recipientUser: true },
+        relations: { requesterUser: true, recipientUser: true, review: true },
         order: { createdAt: 'DESC', id: 'DESC' },
       });
       expect(result).toEqual([
         {
           id: 42,
           message: dto.message,
-          status: ServiceRequestStatus.SENT,
+          status: ServiceRequestStatus.COMPLETED,
+          hasReview,
           createdAt,
           requesterUserId: requesterId,
           recipientUserId: recipientId,
@@ -325,6 +348,7 @@ describe('ServiceRequestsService', () => {
         id: 42,
         message: dto.message,
         status,
+        hasReview: false,
         createdAt,
         requesterUserId: 8,
         recipientUserId: 7,
@@ -351,6 +375,7 @@ describe('ServiceRequestsService', () => {
         offeringTitleSnapshot: 'Peinture',
         offeringPricingTypeSnapshot: ServicePricingType.HOURLY,
         offeringHourlyRateSnapshot: 35,
+        review: null,
         internalNote: 'Internal value',
         requesterUser: {
           id: 8,
@@ -380,7 +405,7 @@ describe('ServiceRequestsService', () => {
 
         expect(requestRepositoryMock.findOne).toHaveBeenCalledExactlyOnceWith({
           where: { id: 42 },
-          relations: { requesterUser: true, recipientUser: true },
+          relations: { requesterUser: true, recipientUser: true, review: true },
         });
         expect(requestRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
           { id: 42, recipientUserId: 7, status: from },

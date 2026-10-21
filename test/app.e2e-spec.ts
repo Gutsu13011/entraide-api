@@ -726,6 +726,88 @@ describe('AppController (e2e)', () => {
       expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
     }
 
+    it.each(['sent', 'received'] as const)(
+      '/service-requests/%s (GET) should restore hasReview per request on repeated reads without exposing review data',
+      async (direction) => {
+        const otherRequest = await completeRequest();
+        const token = direction === 'sent' ? requesterToken : ownerToken;
+        const getList = () =>
+          request(app.getHttpServer())
+            .get(`/service-requests/${direction}`)
+            .set('Authorization', `Bearer ${token}`)
+            .expect(200);
+        const before = await getList();
+        expect(before.body).toHaveLength(2);
+        expect(before.body.map((item: { hasReview: boolean }) => item.hasReview)).toEqual([
+          false,
+          false,
+        ]);
+
+        await postReview().expect(201);
+
+        for (let read = 0; read < 2; read++) {
+          const response = await getList();
+          expect(response.body).toEqual(
+            before.body.map((item: { id: number }) => ({
+              ...item,
+              hasReview: item.id === original.id,
+            })),
+          );
+          expect(
+            response.body.find((item: { id: number }) => item.id === otherRequest.id).hasReview,
+          ).toBe(false);
+          for (const item of response.body) {
+            expect(item).not.toHaveProperty('review');
+            expect(item).not.toHaveProperty('rating');
+            expect(item).not.toHaveProperty('comment');
+            expect(item).not.toHaveProperty('requesterUser');
+            expect(item).not.toHaveProperty('recipientUser');
+          }
+        }
+        expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+      },
+    );
+
+    it.each(['sent', 'received'] as const)(
+      '/service-requests/%s (GET) should preserve hasReview after offering deletion and clear it after provider deletion removes the review',
+      async (direction) => {
+        await postReview().expect(201);
+        const token = direction === 'sent' ? requesterToken : ownerToken;
+        await request(app.getHttpServer())
+          .delete(`/service-providers/${providerId}/service-offerings/${offeringId}`)
+          .set('Authorization', `Bearer ${ownerToken}`)
+          .expect(204);
+        const afterOfferingDeletion = await request(app.getHttpServer())
+          .get(`/service-requests/${direction}`)
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        expect(afterOfferingDeletion.body).toHaveLength(1);
+        expect(afterOfferingDeletion.body[0]).toMatchObject({
+          id: original.id,
+          hasReview: true,
+          serviceProviderId: providerId,
+          serviceOfferingId: null,
+        });
+
+        await request(app.getHttpServer())
+          .delete(`/service-providers/${providerId}`)
+          .set('Authorization', `Bearer ${ownerToken}`)
+          .expect(204);
+        const afterProviderDeletion = await request(app.getHttpServer())
+          .get(`/service-requests/${direction}`)
+          .set('Authorization', `Bearer ${token}`)
+          .expect(200);
+        expect(afterProviderDeletion.body).toEqual([
+          {
+            ...afterOfferingDeletion.body[0],
+            hasReview: false,
+            serviceProviderId: null,
+          },
+        ]);
+        expect(await reviewsRepository.count()).toBe(0);
+      },
+    );
+
     it(`${route} (POST) should create one review with the requester account name without modifying the completed request`, async () => {
       const response = await postReview().expect(201);
 
@@ -1983,6 +2065,7 @@ describe('AppController (e2e)', () => {
           id: expect.any(Number),
           message,
           status: ServiceRequestStatus.SENT,
+          hasReview: false,
           createdAt: expect.any(String),
           requesterUserId: requesterId,
           recipientUserId: ownerId,
@@ -2005,6 +2088,7 @@ describe('AppController (e2e)', () => {
         expect(providerId).not.toBe(ownerId);
         delete expectedStored.requester;
         delete expectedStored.recipient;
+        delete expectedStored.hasReview;
         expect(stored).toEqual(expectedStored);
         expect(await requestsRepository.count()).toBe(1);
       },
@@ -2266,6 +2350,7 @@ describe('AppController (e2e)', () => {
     function asJson(selected: ServiceRequest[]) {
       return selected.map((row) => ({
         ...row,
+        hasReview: false,
         createdAt: row.createdAt.toISOString(),
         requester: participants[row.requesterUserId],
         recipient: participants[row.recipientUserId],

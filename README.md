@@ -175,6 +175,17 @@ Creation, list and status update responses use the same format. Each request inc
 are excluded from these responses. Participant names reflect the current
 accounts; the offering title and pricing remain snapshots of the request.
 
+Each response also includes the required boolean `hasReview`, derived from the
+review linked to that specific request. A completed request without a review
+returns `false`; publishing its review makes subsequent sent and received list
+responses return `true`, including after leaving and reopening the page.
+Other requests to the same provider keep their own independent value. The
+loaded review object, its rating and its comment are not embedded in these
+private request responses. No additional database column or migration is needed.
+Deleting only the offering preserves the review and `hasReview`; deleting the
+provider removes its reviews, so retained requests return `hasReview: false`
+and `serviceProviderId: null`.
+
 The offering must belong to the provider specified in the URL. A missing
 provider or an offering not found for that provider returns `404 Not Found`.
 An offering on a profile without an owner cannot receive requests and returns

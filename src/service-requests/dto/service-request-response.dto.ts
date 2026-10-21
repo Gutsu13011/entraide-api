@@ -17,6 +17,13 @@ export class ServiceRequestResponseDto {
   status: ServiceRequestStatus;
 
   @ApiProperty({
+    type: Boolean,
+    example: false,
+    description: 'Whether this service request already has a review',
+  })
+  hasReview: boolean;
+
+  @ApiProperty({
     type: String,
     format: 'date-time',
     example: '2026-10-10T09:30:00.000Z',
