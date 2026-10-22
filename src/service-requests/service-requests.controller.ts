@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseIntPipe,
   Patch,
@@ -15,6 +17,7 @@ import {
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
+  ApiNoContentResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -29,6 +32,7 @@ import { ServiceRequestResponseDto } from './dto/service-request-response.dto.js
 import { UpdateServiceRequestStatusDto } from './dto/update-service-request-status.dto.js';
 import { CreateServiceRequestMessageDto } from './dto/create-service-request-message.dto.js';
 import { ServiceRequestMessageResponseDto } from './dto/service-request-message-response.dto.js';
+import { MarkServiceRequestMessagesReadDto } from './dto/mark-service-request-messages-read.dto.js';
 
 @ApiTags('service-requests')
 @Controller()
@@ -153,5 +157,31 @@ export class ServiceRequestsController {
     @Req() request: Request & { user: { id: number } },
   ): Promise<ServiceRequestMessageResponseDto[]> {
     return this.serviceRequestsService.findMessages(id, request.user.id);
+  }
+
+  @ApiOperation({ summary: 'Mark received conversation messages as read' })
+  @ApiNoContentResponse({
+    description: 'Received messages marked as read up to the indicated message',
+  })
+  @ApiBadRequestResponse({ description: 'The request identifier or message boundary is invalid' })
+  @ApiUnauthorizedResponse({ description: 'Missing, invalid or expired access token' })
+  @ApiForbiddenResponse({ description: 'Only request participants can access this conversation' })
+  @ApiNotFoundResponse({
+    description: 'Service request or message boundary not found in this conversation',
+  })
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Patch('service-requests/:id/messages/read')
+  markMessagesAsRead(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() markServiceRequestMessagesReadDto: MarkServiceRequestMessagesReadDto,
+    @Req() request: Request & { user: { id: number } },
+  ): Promise<void> {
+    return this.serviceRequestsService.markMessagesAsRead(
+      id,
+      markServiceRequestMessagesReadDto,
+      request.user.id,
+    );
   }
 }

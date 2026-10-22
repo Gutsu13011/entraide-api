@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ServiceRequest } from './service-request.entity.js';
-import { Repository } from 'typeorm';
+import { IsNull, LessThanOrEqual, Not, Repository } from 'typeorm';
 import { ServiceOffering } from '../service-offerings/service-offering.entity.js';
 import { ServiceProvidersService } from '../service-providers/service-providers.service.js';
 import { CreateServiceRequestDto } from './dto/create-service-request.dto.js';
@@ -16,6 +16,7 @@ import { ServiceRequestStatus } from './service-request-status.enum.js';
 import { ServiceRequestMessage } from './service-request-message.entity.js';
 import { ServiceRequestMessageResponseDto } from './dto/service-request-message-response.dto.js';
 import { CreateServiceRequestMessageDto } from './dto/create-service-request-message.dto.js';
+import { MarkServiceRequestMessagesReadDto } from './dto/mark-service-request-messages-read.dto.js';
 
 @Injectable()
 export class ServiceRequestsService {
@@ -169,6 +170,32 @@ export class ServiceRequestsService {
     });
 
     return messages.map((message) => this.toMessageResponse(message));
+  }
+
+  async markMessagesAsRead(
+    serviceRequestId: number,
+    markServiceRequestMessagesReadDto: MarkServiceRequestMessagesReadDto,
+    userId: number,
+  ): Promise<void> {
+    const serviceRequest = await this.findRequestForParticipant(serviceRequestId, userId);
+    const message = await this.serviceRequestMessageRepository.findOneBy({
+      id: markServiceRequestMessagesReadDto.upToMessageId,
+      serviceRequestId: serviceRequest.id,
+    });
+
+    if (message === null) {
+      throw new NotFoundException('Message not found in this conversation');
+    }
+
+    await this.serviceRequestMessageRepository.update(
+      {
+        serviceRequestId: serviceRequest.id,
+        authorUserId: Not(userId),
+        readAt: IsNull(),
+        id: LessThanOrEqual(markServiceRequestMessagesReadDto.upToMessageId),
+      },
+      { readAt: new Date() },
+    );
   }
 
   private async findRequestForParticipant(

@@ -120,6 +120,7 @@ The following operations require a valid access token:
 - `PATCH /service-requests/:id/status`
 - `POST /service-requests/:id/messages`
 - `GET /service-requests/:id/messages`
+- `PATCH /service-requests/:id/messages/read`
 
 Provider, offering and review consultation endpoints remain public.
 
@@ -158,6 +159,7 @@ All service request endpoints require a valid access token:
 - `PATCH /service-requests/:id/status` changes the status of a request addressed to the authenticated account and returns `200 OK`.
 - `POST /service-requests/:id/messages` sends a reply as either participant and returns `201 Created`.
 - `GET /service-requests/:id/messages` returns the conversation replies to either participant with `200 OK`.
+- `PATCH /service-requests/:id/messages/read` marks received replies as read through a message boundary and returns `204 No Content`.
 
 The creation body contains only the message:
 
@@ -301,9 +303,24 @@ message response described above. Repeated reads do not change message read
 dates or request status, and history remains available after offering or
 provider deletion. The initial request text remains separate from this list.
 
-Recipient-controlled read tracking and frontend conversations will follow.
-In-app notifications, real-time delivery and delayed email reminders for
-unread messages are planned later.
+`PATCH /service-requests/:id/messages/read` accepts only a positive integer
+`upToMessageId` and returns `204 No Content` with no response body. The client
+supplies the highest identifier among the displayed messages. The API first
+checks participation, then checks that this boundary belongs to that request.
+A missing request or a boundary absent from that conversation returns `404`;
+an unrelated account receives `403`. Invalid identifiers, invalid boundaries
+and additional body fields return `400`.
+
+The update applies only to this request's messages written by the other
+participant, with a null `readAt` and an id at or below the boundary. The server
+sets one read timestamp. Own messages, later messages, other conversations and
+existing read dates remain unchanged. Repeating the operation, including when
+no message needs updating, succeeds without replacing prior read dates. This
+operation does not change the request's status. There is no mutating GET route.
+
+Frontend conversations and unread-message counters will follow. In-app
+notifications, real-time delivery and delayed email reminders for unread
+messages are planned later.
 
 ## Reviews
 
@@ -445,6 +462,6 @@ migrations, unit tests and end-to-end tests.
 
 ## Planned improvements
 
-- Frontend conversations and unread-message tracking
+- Frontend conversations and unread-message counters
 - Real-time message notifications
 - Delayed email reminders for unread messages

@@ -148,4 +148,26 @@ describe('ServiceRequestsController', () => {
       await module.close();
     }
   });
+  it('should pass the conversation id, read boundary and authenticated reader id without returning a response body', async () => {
+    const serviceMock = { markMessagesAsRead: vi.fn().mockResolvedValue(undefined) };
+    const module = await Test.createTestingModule({
+      controllers: [ServiceRequestsController],
+      providers: [{ provide: ServiceRequestsService, useValue: serviceMock }],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
+    try {
+      const controller = module.get(ServiceRequestsController);
+      const dto = { upToMessageId: 105 };
+      const requestMock = { user: { id: 8 } } as Request & { user: { id: number } };
+
+      const result = await controller.markMessagesAsRead(42, dto, requestMock);
+
+      expect(serviceMock.markMessagesAsRead).toHaveBeenCalledExactlyOnceWith(42, dto, 8);
+      expect(result).toBeUndefined();
+    } finally {
+      await module.close();
+    }
+  });
 });

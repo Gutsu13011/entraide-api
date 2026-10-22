@@ -2685,6 +2685,335 @@ describe('AppController (e2e)', () => {
         expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
       });
 
+      describe('conversation read receipts', () => {
+        const readRoute = '/service-requests/:id/messages/read';
+
+        function markRead(
+          body: object = { upToMessageId: 105 },
+          token = requesterToken,
+          id: number | string = original.id,
+        ) {
+          return request(app.getHttpServer())
+            .patch(`/service-requests/${id}/messages/read`)
+            .set('Authorization', `Bearer ${token}`)
+            .send(body);
+        }
+
+        async function seedReadHistory(reader: 'requester' | 'recipient' = 'requester') {
+          const readerId = reader === 'requester' ? requesterId : ownerId;
+          const senderId = reader === 'requester' ? ownerId : requesterId;
+          const token = reader === 'requester' ? requesterToken : ownerToken;
+          const other = await sendRequest({
+            message: 'Autre discussion pour vérifier le filtre',
+          }).expect(201);
+          const createdAt = new Date('2026-10-22T08:00:00.000Z');
+          const alreadyReadAt = new Date('2026-10-22T08:30:00.000Z');
+          await messagesRepository.save([
+            {
+              id: 101,
+              content: 'Reçu non lu avant la limite',
+              serviceRequestId: original.id,
+              authorUserId: senderId,
+              createdAt,
+              readAt: null,
+            },
+            {
+              id: 102,
+              content: 'Mon propre message',
+              serviceRequestId: original.id,
+              authorUserId: readerId,
+              createdAt,
+              readAt: null,
+            },
+            {
+              id: 103,
+              content: 'Reçu déjà lu',
+              serviceRequestId: original.id,
+              authorUserId: senderId,
+              createdAt,
+              readAt: alreadyReadAt,
+            },
+            {
+              id: 104,
+              content: 'Autre discussion sous la limite',
+              serviceRequestId: other.body.id,
+              authorUserId: senderId,
+              createdAt,
+              readAt: null,
+            },
+            {
+              id: 105,
+              content: 'Reçu à la limite',
+              serviceRequestId: original.id,
+              authorUserId: senderId,
+              createdAt,
+              readAt: null,
+            },
+            {
+              id: 106,
+              content: 'Reçu après la limite',
+              serviceRequestId: original.id,
+              authorUserId: senderId,
+              createdAt,
+              readAt: null,
+            },
+            {
+              id: 107,
+              content: 'Mon message après la limite',
+              serviceRequestId: original.id,
+              authorUserId: readerId,
+              createdAt,
+              readAt: null,
+            },
+          ]);
+          return {
+            token,
+            readerId,
+            otherId: other.body.id,
+            snapshot: await messagesRepository.find({ order: { id: 'ASC' } }),
+          };
+        }
+
+        async function expectUnchanged(snapshot: ServiceRequestMessage[]) {
+          expect(await messagesRepository.find({ order: { id: 'ASC' } })).toEqual(snapshot);
+          expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+        }
+
+        it.each(['requester', 'recipient'] as const)(
+          `${readRoute} (PATCH) should let the %s mark only unread received messages through the boundary and preserve all other data`,
+          async (reader) => {
+            const history = await seedReadHistory(reader);
+            const startedAt = Date.now();
+
+            const response = await markRead({ upToMessageId: 105 }, history.token).expect(204);
+
+            expect(response.text).toBe('');
+            const after = await messagesRepository.find({ order: { id: 'ASC' } });
+            for (let index = 0; index < after.length; index++) {
+              const row = after[index];
+              if ([101, 105].includes(row.id)) {
+                expect(row).toEqual({ ...history.snapshot[index], readAt: expect.any(Date) });
+                expect(row.readAt!.getTime()).toBeGreaterThanOrEqual(startedAt);
+                expect(row.readAt!.getTime()).toBeLessThanOrEqual(Date.now());
+              } else {
+                expect(row).toEqual(history.snapshot[index]);
+              }
+            }
+            expect(after.find((row) => row.id === 101)!.readAt).toEqual(
+              after.find((row) => row.id === 105)!.readAt,
+            );
+            expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+            const visible = await getMessages(history.token).expect(200);
+            expect(visible.body.find((message: { id: number }) => message.id === 101).readAt).toBe(
+              after[0].readAt!.toISOString(),
+            );
+            expect(
+              visible.body.find((message: { id: number }) => message.id === 106).readAt,
+            ).toBeNull();
+
+            await markRead({ upToMessageId: 105 }, history.token).expect(204);
+            expect(await messagesRepository.find({ order: { id: 'ASC' } })).toEqual(after);
+          },
+        );
+
+        it(`${readRoute} (PATCH) should accept an own-message boundary while marking only earlier received messages`, async () => {
+          const history = await seedReadHistory();
+
+          await markRead({ upToMessageId: 102 }).expect(204);
+
+          const after = await messagesRepository.find({ order: { id: 'ASC' } });
+          expect(after[0]).toEqual({ ...history.snapshot[0], readAt: expect.any(Date) });
+          expect(after.slice(1)).toEqual(history.snapshot.slice(1));
+        });
+
+        it(`${readRoute} (PATCH) should return 204 when the valid boundary has no unread received messages to update`, async () => {
+          const created = await postMessage({ content: 'Mon message uniquement' }).expect(201);
+          const before = await messagesRepository.find();
+
+          const response = await markRead({ upToMessageId: created.body.id }).expect(204);
+
+          expect(response.text).toBe('');
+          await expectUnchanged(before);
+        });
+
+        it(`${readRoute} (PATCH) should leave a message arriving after the displayed history unread`, async () => {
+          const first = await postMessage({ content: 'Premier message reçu' }, ownerToken).expect(
+            201,
+          );
+          const displayed = await getMessages().expect(200);
+          const boundary = Math.max(...displayed.body.map((message: { id: number }) => message.id));
+          const later = await postMessage({ content: 'Message arrivé ensuite' }, ownerToken).expect(
+            201,
+          );
+
+          await markRead({ upToMessageId: boundary }).expect(204);
+
+          expect(
+            (await messagesRepository.findOneByOrFail({ id: first.body.id })).readAt,
+          ).toBeInstanceOf(Date);
+          expect(
+            (await messagesRepository.findOneByOrFail({ id: later.body.id })).readAt,
+          ).toBeNull();
+        });
+
+        it(`${readRoute} (PATCH) should refuse a boundary belonging to another conversation`, async () => {
+          const history = await seedReadHistory();
+
+          const response = await markRead({ upToMessageId: 104 }).expect(404);
+
+          expect(response.body.message).toBe('Message not found in this conversation');
+          await expectUnchanged(history.snapshot);
+        });
+
+        it(`${readRoute} (PATCH) should refuse a nonexistent message boundary`, async () => {
+          const history = await seedReadHistory();
+
+          await markRead({ upToMessageId: 999999 }).expect(404);
+
+          await expectUnchanged(history.snapshot);
+        });
+
+        it(`${readRoute} (PATCH) should forbid an unrelated account from marking the conversation as read`, async () => {
+          const history = await seedReadHistory();
+          const token = await getAccessToken('read-receipt-outsider@example.com');
+
+          await markRead({ upToMessageId: 105 }, token).expect(403);
+
+          await expectUnchanged(history.snapshot);
+        });
+
+        it.each([
+          { label: 'missing boundary', body: {} },
+          { label: 'zero boundary', body: { upToMessageId: 0 } },
+          { label: 'negative boundary', body: { upToMessageId: -1 } },
+          { label: 'fractional boundary', body: { upToMessageId: 1.5 } },
+          { label: 'numeric string boundary', body: { upToMessageId: '105' } },
+          { label: 'null boundary', body: { upToMessageId: null } },
+          { label: 'boolean boundary', body: { upToMessageId: true } },
+          { label: 'array boundary', body: { upToMessageId: [105] } },
+          { label: 'object boundary', body: { upToMessageId: { id: 105 } } },
+        ])(
+          `${readRoute} (PATCH) should reject $label without changing messages`,
+          async ({ body }) => {
+            const history = await seedReadHistory();
+
+            await markRead(body).expect(400);
+
+            await expectUnchanged(history.snapshot);
+          },
+        );
+
+        it.each([
+          { field: 'readAt', value: '2000-01-01T00:00:00.000Z' },
+          { field: 'authorUserId', value: 999 },
+          { field: 'serviceRequestId', value: 999 },
+        ])(
+          `${readRoute} (PATCH) should reject a client-supplied $field`,
+          async ({ field, value }) => {
+            const history = await seedReadHistory();
+
+            const response = await markRead({ upToMessageId: 105, [field]: value }).expect(400);
+
+            expect(response.body.message).toContain(`property ${field} should not exist`);
+            await expectUnchanged(history.snapshot);
+          },
+        );
+
+        it.each(['missing', 'invalid', 'expired'])(
+          `${readRoute} (PATCH) should reject a %s bearer token without changing messages`,
+          async (kind) => {
+            const history = await seedReadHistory();
+            const pending = request(app.getHttpServer())
+              .patch(`/service-requests/${original.id}/messages/read`)
+              .send({ upToMessageId: 105 });
+            if (kind === 'invalid') pending.set('Authorization', 'Bearer invalid-token');
+            if (kind === 'expired') {
+              const token = await app
+                .get(JwtService)
+                .signAsync({ sub: String(requesterId) }, { expiresIn: -1 });
+              pending.set('Authorization', `Bearer ${token}`);
+            }
+
+            await pending.expect(401);
+
+            await expectUnchanged(history.snapshot);
+          },
+        );
+
+        it.each([
+          { id: 'not-a-number', expected: 400 },
+          { id: '1.5', expected: 400 },
+          { id: '999999', expected: 404 },
+        ])(
+          `${readRoute} (PATCH) should return $expected for request id $id`,
+          async ({ id, expected }) => {
+            const history = await seedReadHistory();
+
+            await markRead({ upToMessageId: 105 }, requesterToken, id).expect(expected);
+
+            await expectUnchanged(history.snapshot);
+          },
+        );
+
+        it.each(['offering', 'provider'] as const)(
+          `${readRoute} (PATCH) should preserve read access for recorded participants after %s deletion`,
+          async (target) => {
+            await seedReadHistory();
+            await request(app.getHttpServer())
+              .delete(
+                target === 'offering'
+                  ? `/service-providers/${providerId}/service-offerings/${offering.id}`
+                  : `/service-providers/${providerId}`,
+              )
+              .set('Authorization', `Bearer ${ownerToken}`)
+              .expect(204);
+
+            await markRead({ upToMessageId: 105 }).expect(204);
+
+            expect((await messagesRepository.findOneByOrFail({ id: 101 })).readAt).toBeInstanceOf(
+              Date,
+            );
+            expect((await messagesRepository.findOneByOrFail({ id: 102 })).readAt).toBeNull();
+            expect((await messagesRepository.findOneByOrFail({ id: 106 })).readAt).toBeNull();
+            expect((await requestsRepository.findOneByOrFail({ id: original.id })).status).toBe(
+              original.status,
+            );
+          },
+        );
+
+        it(`${readRoute} (GET) should not expose a route that mutates message read dates`, async () => {
+          const history = await seedReadHistory();
+
+          await request(app.getHttpServer())
+            .get(`/service-requests/${original.id}/messages/read`)
+            .set('Authorization', `Bearer ${requesterToken}`)
+            .send({ upToMessageId: 105 })
+            .expect(404);
+
+          await expectUnchanged(history.snapshot);
+        });
+
+        it(`${readRoute} (PATCH) should document an authenticated 204 response without content and the positive integer boundary`, () => {
+          const document = SwaggerModule.createDocument(
+            app,
+            new DocumentBuilder().addBearerAuth().build(),
+          );
+          const path = document.paths['/service-requests/{id}/messages/read'];
+          expect(path.get).toBeUndefined();
+          const operation = path.patch!;
+          expect(operation.responses['204']).toBeDefined();
+          expect(operation.responses['204']).not.toHaveProperty('content');
+          expect(operation.responses).not.toHaveProperty('200');
+          for (const status of ['400', '401', '403', '404'])
+            expect(operation.responses).toHaveProperty(status);
+          expect(operation.security).toEqual(expect.arrayContaining([{ bearer: [] }]));
+          expect(document.components!.schemas!.MarkServiceRequestMessagesReadDto).toMatchObject({
+            required: ['upToMessageId'],
+            properties: { upToMessageId: { type: 'number', minimum: 1 } },
+          });
+        });
+      });
+
       it(`${route} (GET) should document an authenticated 200 array response and its access errors in Swagger`, () => {
         const document = SwaggerModule.createDocument(
           app,
