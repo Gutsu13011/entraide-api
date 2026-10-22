@@ -6,12 +6,13 @@ import { ServiceRequest } from './service-request.entity.js';
 import { ServiceOffering } from '../service-offerings/service-offering.entity.js';
 import { ServiceProvidersModule } from '../service-providers/service-providers.module.js';
 import { AuthModule } from '../auth/auth.module.js';
+import { ServiceRequestMessage } from './service-request-message.entity.js';
 
 @Module({
   providers: [ServiceRequestsService],
   controllers: [ServiceRequestsController],
   imports: [
-    TypeOrmModule.forFeature([ServiceRequest, ServiceOffering]),
+    TypeOrmModule.forFeature([ServiceRequest, ServiceOffering, ServiceRequestMessage]),
     ServiceProvidersModule,
     AuthModule,
   ],

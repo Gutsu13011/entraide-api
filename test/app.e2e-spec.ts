@@ -14,6 +14,8 @@ import { JwtService } from '@nestjs/jwt';
 import { ServiceRequest } from '../src/service-requests/service-request.entity.js';
 import { ServiceRequestStatus } from '../src/service-requests/service-request-status.enum.js';
 import { Review } from '../src/reviews/review.entity.js';
+import { ServiceRequestMessage } from '../src/service-requests/service-request-message.entity.js';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
@@ -2289,6 +2291,224 @@ describe('AppController (e2e)', () => {
         }
       },
     );
+    describe('conversation message creation', () => {
+      const route = '/service-requests/:id/messages';
+      const content = '  Bonjour, disponible samedi ?\nMerci !  ';
+      let original: ServiceRequest;
+      let messagesRepository: Repository<ServiceRequestMessage>;
+
+      beforeEach(async () => {
+        const created = await sendRequest().expect(201);
+        original = await requestsRepository.findOneByOrFail({ id: created.body.id });
+        messagesRepository = app.get<Repository<ServiceRequestMessage>>(
+          getRepositoryToken(ServiceRequestMessage),
+        );
+      });
+
+      function postMessage(
+        body: object = { content },
+        token = requesterToken,
+        id: number | string = original.id,
+      ) {
+        return request(app.getHttpServer())
+          .post(`/service-requests/${id}/messages`)
+          .set('Authorization', `Bearer ${token}`)
+          .send(body);
+      }
+
+      async function expectNoMessage() {
+        expect(await messagesRepository.count()).toBe(0);
+        expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+      }
+
+      it.each(['requester', 'recipient'] as const)(
+        `${route} (POST) should let the %s create an unread message and return only the saved message and safe author identity`,
+        async (actor) => {
+          const authorId = actor === 'requester' ? requesterId : ownerId;
+          const token = actor === 'requester' ? requesterToken : ownerToken;
+          const author =
+            actor === 'requester'
+              ? { id: requesterId, firstName: 'Bruno', lastName: 'Leroy' }
+              : { id: ownerId, firstName: 'Alice', lastName: 'Martin' };
+          // Force message and account identifiers to differ, preventing accidental reads by author id.
+          const previous = await messagesRepository.save({
+            id: 100,
+            content: 'Message précédent',
+            serviceRequestId: original.id,
+            authorUserId: requesterId,
+            readAt: new Date('2026-10-22T09:00:00.000Z'),
+          });
+
+          const response = await postMessage({ content }, token).expect(201);
+
+          expect(response.body).toEqual({
+            id: 101,
+            content,
+            serviceRequestId: original.id,
+            authorUserId: authorId,
+            createdAt: expect.any(String),
+            readAt: null,
+            author,
+          });
+          expect(Number.isNaN(Date.parse(response.body.createdAt))).toBe(false);
+          expect(await messagesRepository.findOneByOrFail({ id: response.body.id })).toEqual({
+            id: 101,
+            content,
+            serviceRequestId: original.id,
+            authorUserId: authorId,
+            createdAt: new Date(response.body.createdAt),
+            readAt: null,
+          });
+          expect(await messagesRepository.findOneByOrFail({ id: previous.id })).toEqual(previous);
+          expect(await messagesRepository.count()).toBe(2);
+          expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+        },
+      );
+
+      it(`${route} (POST) should accept a message at the maximum length of 2000 characters`, async () => {
+        const content = 'x'.repeat(2000);
+
+        const response = await postMessage({ content }).expect(201);
+
+        expect(response.body.content).toBe(content);
+        expect(response.body.readAt).toBeNull();
+        expect(await messagesRepository.count()).toBe(1);
+      });
+
+      it.each([
+        { label: 'missing content', body: {} },
+        { label: 'empty content', body: { content: '' } },
+        { label: 'whitespace-only content', body: { content: ' \t\n ' } },
+        { label: 'null content', body: { content: null } },
+        { label: 'numeric content', body: { content: 42 } },
+        { label: 'array content', body: { content: ['Bonjour'] } },
+        { label: 'object content', body: { content: { text: 'Bonjour' } } },
+        { label: 'content longer than 2000 characters', body: { content: 'x'.repeat(2001) } },
+      ])(`${route} (POST) should reject $label without writing a message`, async ({ body }) => {
+        await postMessage(body).expect(400);
+
+        await expectNoMessage();
+      });
+
+      it.each([
+        { field: 'authorUserId', value: 999 },
+        { field: 'serviceRequestId', value: 999 },
+        { field: 'id', value: 999 },
+        { field: 'createdAt', value: '2000-01-01T00:00:00.000Z' },
+        { field: 'readAt', value: '2000-01-01T00:00:00.000Z' },
+        { field: 'author', value: { id: 999, firstName: 'Forged', lastName: 'Author' } },
+      ])(`${route} (POST) should reject a client-supplied $field`, async ({ field, value }) => {
+        const response = await postMessage({ content, [field]: value }).expect(400);
+
+        expect(response.body.message).toContain(`property ${field} should not exist`);
+        await expectNoMessage();
+      });
+
+      it.each(['missing', 'invalid', 'expired'])(
+        `${route} (POST) should reject a %s bearer token without writing a message`,
+        async (kind) => {
+          const pending = request(app.getHttpServer())
+            .post(`/service-requests/${original.id}/messages`)
+            .send({ content });
+          if (kind === 'invalid') pending.set('Authorization', 'Bearer invalid-token');
+          if (kind === 'expired') {
+            const token = await app
+              .get(JwtService)
+              .signAsync({ sub: String(requesterId) }, { expiresIn: -1 });
+            pending.set('Authorization', `Bearer ${token}`);
+          }
+          await pending.expect(401);
+          await expectNoMessage();
+        },
+      );
+
+      it.each([
+        { id: 'not-a-number', expected: 400 },
+        { id: '1.5', expected: 400 },
+        { id: '999999', expected: 404 },
+      ])(
+        `${route} (POST) should return $expected for request id $id without writing a message`,
+        async ({ id, expected }) => {
+          await postMessage({ content }, requesterToken, id).expect(expected);
+
+          await expectNoMessage();
+        },
+      );
+
+      it(`${route} (POST) should forbid an unrelated authenticated account from writing to the conversation`, async () => {
+        const otherToken = await getAccessToken('message-outsider@example.com');
+
+        const response = await postMessage({ content }, otherToken).expect(403);
+
+        expect(response.body.message).toBe(
+          'Only request participants can access this conversation',
+        );
+        await expectNoMessage();
+      });
+
+      it.each(['offering', 'provider'] as const)(
+        `${route} (POST) should preserve discussion access for recorded participants after %s deletion`,
+        async (target) => {
+          const first = await postMessage().expect(201);
+          await request(app.getHttpServer())
+            .delete(
+              target === 'offering'
+                ? `/service-providers/${providerId}/service-offerings/${offering.id}`
+                : `/service-providers/${providerId}`,
+            )
+            .set('Authorization', `Bearer ${ownerToken}`)
+            .expect(204);
+
+          const response = await postMessage(
+            { content: 'La discussion reste accessible.' },
+            ownerToken,
+          ).expect(201);
+
+          expect(response.body).toMatchObject({
+            serviceRequestId: original.id,
+            authorUserId: ownerId,
+            readAt: null,
+          });
+          expect(await messagesRepository.count()).toBe(2);
+          expect(await messagesRepository.findOneByOrFail({ id: first.body.id })).toMatchObject({
+            content,
+            readAt: null,
+          });
+          expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual({
+            ...original,
+            serviceOfferingId: null,
+            serviceProviderId: target === 'provider' ? null : providerId,
+          });
+        },
+      );
+
+      it(`${route} (POST) should document its 201 response and content validation in Swagger`, () => {
+        const document = SwaggerModule.createDocument(
+          app,
+          new DocumentBuilder().addBearerAuth().build(),
+        );
+        const operation = document.paths['/service-requests/{id}/messages'].post!;
+
+        expect(operation.responses).toHaveProperty('201');
+        expect(operation.responses).not.toHaveProperty('200');
+        expect(operation.responses['201']).toMatchObject({
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServiceRequestMessageResponseDto' },
+            },
+          },
+        });
+        expect(operation.responses).toHaveProperty('400');
+        expect(operation.responses).toHaveProperty('401');
+        expect(operation.responses).toHaveProperty('403');
+        expect(operation.responses).toHaveProperty('404');
+        expect(operation.security).toEqual(expect.arrayContaining([{ bearer: [] }]));
+        expect(document.components!.schemas!.CreateServiceRequestMessageDto).toMatchObject({
+          required: ['content'],
+          properties: { content: { type: 'string', minLength: 1, maxLength: 2000 } },
+        });
+      });
+    });
   });
 
   describe('service request consultation', () => {

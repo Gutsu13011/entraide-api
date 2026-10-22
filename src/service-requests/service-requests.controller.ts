@@ -27,6 +27,8 @@ import { CreateServiceRequestDto } from './dto/create-service-request.dto.js';
 import { ServiceRequestsService } from './service-requests.service.js';
 import { ServiceRequestResponseDto } from './dto/service-request-response.dto.js';
 import { UpdateServiceRequestStatusDto } from './dto/update-service-request-status.dto.js';
+import { CreateServiceRequestMessageDto } from './dto/create-service-request-message.dto.js';
+import { ServiceRequestMessageResponseDto } from './dto/service-request-message-response.dto.js';
 
 @ApiTags('service-requests')
 @Controller()
@@ -112,6 +114,27 @@ export class ServiceRequestsController {
     return this.serviceRequestsService.updateStatus(
       id,
       updateServiceRequestStatusDto,
+      request.user.id,
+    );
+  }
+
+  @ApiOperation({ summary: 'Send a message in a service request conversation' })
+  @ApiCreatedResponse({ type: ServiceRequestMessageResponseDto })
+  @ApiBadRequestResponse({ description: 'The identifier or message content is invalid' })
+  @ApiUnauthorizedResponse({ description: 'Missing, invalid or expired access token' })
+  @ApiForbiddenResponse({ description: 'Only request participants can access this conversation' })
+  @ApiNotFoundResponse({ description: 'Service request not found' })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('service-requests/:id/messages')
+  createMessage(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() createServiceRequestMessageDto: CreateServiceRequestMessageDto,
+    @Req() request: Request & { user: { id: number } },
+  ): Promise<ServiceRequestMessageResponseDto> {
+    return this.serviceRequestsService.createMessage(
+      id,
+      createServiceRequestMessageDto,
       request.user.id,
     );
   }

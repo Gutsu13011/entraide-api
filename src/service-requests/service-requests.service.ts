@@ -13,6 +13,9 @@ import { CreateServiceRequestDto } from './dto/create-service-request.dto.js';
 import { ServiceRequestResponseDto } from './dto/service-request-response.dto.js';
 import { UpdateServiceRequestStatusDto } from './dto/update-service-request-status.dto.js';
 import { ServiceRequestStatus } from './service-request-status.enum.js';
+import { ServiceRequestMessage } from './service-request-message.entity.js';
+import { ServiceRequestMessageResponseDto } from './dto/service-request-message-response.dto.js';
+import { CreateServiceRequestMessageDto } from './dto/create-service-request-message.dto.js';
 
 @Injectable()
 export class ServiceRequestsService {
@@ -22,6 +25,8 @@ export class ServiceRequestsService {
     @InjectRepository(ServiceOffering)
     private readonly serviceOfferingsRepository: Repository<ServiceOffering>,
     private readonly serviceProvidersService: ServiceProvidersService,
+    @InjectRepository(ServiceRequestMessage)
+    private readonly serviceRequestMessageRepository: Repository<ServiceRequestMessage>,
   ) {}
 
   async create(
@@ -129,6 +134,60 @@ export class ServiceRequestsService {
     }
 
     return this.toResponse({ ...serviceRequest, status: nextStatus });
+  }
+
+  async createMessage(
+    serviceRequestId: number,
+    createServiceRequestMessageDto: CreateServiceRequestMessageDto,
+    userId: number,
+  ): Promise<ServiceRequestMessageResponseDto> {
+    const serviceRequest = await this.findRequestForParticipant(serviceRequestId, userId);
+    const createMessage = this.serviceRequestMessageRepository.create({
+      content: createServiceRequestMessageDto.content,
+      serviceRequestId: serviceRequest.id,
+      authorUserId: userId,
+      readAt: null,
+    });
+    const savedMessage = await this.serviceRequestMessageRepository.save(createMessage);
+    const message = await this.serviceRequestMessageRepository.findOneOrFail({
+      where: { id: savedMessage.id },
+      relations: { authorUser: true },
+    });
+
+    return this.toMessageResponse(message);
+  }
+
+  private async findRequestForParticipant(
+    serviceRequestId: number,
+    userId: number,
+  ): Promise<ServiceRequest> {
+    const serviceRequest = await this.serviceRequestsRepository.findOneBy({ id: serviceRequestId });
+
+    if (serviceRequest === null) {
+      throw new NotFoundException('Service request not found');
+    }
+
+    if (userId !== serviceRequest.requesterUserId && userId !== serviceRequest.recipientUserId) {
+      throw new ForbiddenException('Only request participants can access this conversation');
+    }
+
+    return serviceRequest;
+  }
+
+  private toMessageResponse(message: ServiceRequestMessage): ServiceRequestMessageResponseDto {
+    return {
+      id: message.id,
+      content: message.content,
+      createdAt: message.createdAt,
+      readAt: message.readAt,
+      serviceRequestId: message.serviceRequestId,
+      authorUserId: message.authorUserId,
+      author: {
+        id: message.authorUser.id,
+        firstName: message.authorUser.firstName,
+        lastName: message.authorUser.lastName,
+      },
+    };
   }
 
   private toResponse(serviceRequest: ServiceRequest): ServiceRequestResponseDto {

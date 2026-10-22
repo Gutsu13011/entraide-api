@@ -5,6 +5,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ServiceRequestsController } from './service-requests.controller.js';
 import { ServiceRequestsService } from './service-requests.service.js';
 import { ServiceRequestResponseDto } from './dto/service-request-response.dto.js';
+import { ServiceRequestMessageResponseDto } from './dto/service-request-message-response.dto.js';
 
 describe('ServiceRequestsController', () => {
   it('should pass both route ids, the DTO and authenticated user id to the service', async () => {
@@ -81,6 +82,36 @@ describe('ServiceRequestsController', () => {
       const result = await controller.updateStatus(42, dto, requestMock);
 
       expect(serviceMock.updateStatus).toHaveBeenCalledExactlyOnceWith(42, dto, 7);
+      expect(result).toBe(response);
+    } finally {
+      await module.close();
+    }
+  });
+  it('should pass the conversation id, content DTO and authenticated author id to message creation', async () => {
+    const serviceMock = { createMessage: vi.fn() };
+    const module = await Test.createTestingModule({
+      controllers: [ServiceRequestsController],
+      providers: [{ provide: ServiceRequestsService, useValue: serviceMock }],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
+    try {
+      const controller = module.get(ServiceRequestsController);
+      const dto = { content: 'Bonjour, disponible samedi ?' };
+      const requestMock = { user: { id: 8 } } as Request & { user: { id: number } };
+      const response = Object.assign(new ServiceRequestMessageResponseDto(), {
+        id: 101,
+        content: dto.content,
+        serviceRequestId: 42,
+        authorUserId: 8,
+        readAt: null,
+      });
+      serviceMock.createMessage.mockResolvedValue(response);
+
+      const result = await controller.createMessage(42, dto, requestMock);
+
+      expect(serviceMock.createMessage).toHaveBeenCalledExactlyOnceWith(42, dto, 8);
       expect(result).toBe(response);
     } finally {
       await module.close();

@@ -9,6 +9,8 @@ import { ServicePricingType } from '../service-offerings/service-pricing-type.en
 import { ServiceProvidersService } from '../service-providers/service-providers.service.js';
 import type { CreateServiceRequestDto } from './dto/create-service-request.dto.js';
 import { Review } from '../reviews/review.entity.js';
+import { ServiceRequestMessage } from './service-request-message.entity.js';
+import type { CreateServiceRequestMessageDto } from './dto/create-service-request-message.dto.js';
 
 describe('ServiceRequestsService', () => {
   let service: ServiceRequestsService;
@@ -19,8 +21,10 @@ describe('ServiceRequestsService', () => {
     find: vi.fn(),
     findOneOrFail: vi.fn(),
     findOne: vi.fn(),
+    findOneBy: vi.fn(),
     update: vi.fn(),
   };
+  const messageRepositoryMock = { create: vi.fn(), save: vi.fn(), findOneOrFail: vi.fn() };
   const offeringRepositoryMock = { findOneBy: vi.fn() };
   const providerServiceMock = { findOne: vi.fn() };
   const dto: CreateServiceRequestDto = { message: 'Bonjour, je souhaite repeindre ma chambre.' };
@@ -74,6 +78,7 @@ describe('ServiceRequestsService', () => {
         ServiceRequestsService,
         { provide: getRepositoryToken(ServiceRequest), useValue: requestRepositoryMock },
         { provide: getRepositoryToken(ServiceOffering), useValue: offeringRepositoryMock },
+        { provide: getRepositoryToken(ServiceRequestMessage), useValue: messageRepositoryMock },
         { provide: ServiceProvidersService, useValue: providerServiceMock },
       ],
     }).compile();
@@ -316,6 +321,187 @@ describe('ServiceRequestsService', () => {
       await expect(service[method](8)).resolves.toEqual([]);
     },
   );
+
+  describe('createMessage', () => {
+    let conversation: ServiceRequest;
+    const content = '  Bonjour, disponible samedi ?\nMerci !  ';
+    const createdAt = new Date('2026-10-22T12:00:00.000Z');
+    const authors = {
+      8: { id: 8, firstName: 'Alice', lastName: 'Martin' },
+      7: { id: 7, firstName: 'Bruno', lastName: 'Leroy' },
+    };
+
+    function expectNoMessageWrite() {
+      expect(messageRepositoryMock.create).not.toHaveBeenCalled();
+      expect(messageRepositoryMock.save).not.toHaveBeenCalled();
+      expect(messageRepositoryMock.findOneOrFail).not.toHaveBeenCalled();
+    }
+
+    beforeEach(() => {
+      conversation = Object.assign(new ServiceRequest(), {
+        id: 42,
+        requesterUserId: 8,
+        recipientUserId: 7,
+        status: ServiceRequestStatus.SENT,
+        serviceProviderId: 1,
+        serviceOfferingId: 12,
+      });
+      requestRepositoryMock.findOneBy.mockResolvedValue(conversation);
+      messageRepositoryMock.create.mockImplementation((values) =>
+        Object.assign(new ServiceRequestMessage(), values),
+      );
+      messageRepositoryMock.save.mockImplementation(async (message) =>
+        Object.assign(new ServiceRequestMessage(), message, { id: 101, createdAt }),
+      );
+      messageRepositoryMock.findOneOrFail.mockImplementation(async () => {
+        const saved = await messageRepositoryMock.save.mock.results[0].value;
+        return Object.assign(new ServiceRequestMessage(), saved, {
+          internalNote: 'Internal message data',
+          serviceRequest: conversation,
+          authorUser: {
+            ...authors[saved.authorUserId as keyof typeof authors],
+            email: 'private@example.test',
+            passwordHash: 'private-author-hash',
+          },
+        });
+      });
+    });
+
+    it.each([8, 7] as const)(
+      'should allow participant %s to save an unread message, reload its message id and return only safe response fields',
+      async (userId) => {
+        const result = await service.createMessage(42, { content }, userId);
+
+        expect(requestRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({ id: 42 });
+        expect(messageRepositoryMock.create).toHaveBeenCalledExactlyOnceWith({
+          content,
+          serviceRequestId: 42,
+          authorUserId: userId,
+          readAt: null,
+        });
+        expect(messageRepositoryMock.save).toHaveBeenCalledExactlyOnceWith(
+          messageRepositoryMock.create.mock.results[0].value,
+        );
+        expect(messageRepositoryMock.findOneOrFail).toHaveBeenCalledExactlyOnceWith({
+          where: { id: 101 },
+          relations: { authorUser: true },
+        });
+        expect(result).toEqual({
+          id: 101,
+          content,
+          createdAt,
+          readAt: null,
+          serviceRequestId: 42,
+          authorUserId: userId,
+          author: authors[userId],
+        });
+        expect(conversation.status).toBe(ServiceRequestStatus.SENT);
+        expect(requestRepositoryMock.save).not.toHaveBeenCalled();
+        expect(requestRepositoryMock.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('should refuse a missing request before constructing or saving a message', async () => {
+      requestRepositoryMock.findOneBy.mockResolvedValue(null);
+
+      await expect(service.createMessage(42, { content }, 8)).rejects.toThrow(
+        new NotFoundException('Service request not found'),
+      );
+
+      expectNoMessageWrite();
+    });
+
+    it('should refuse an unrelated account before constructing or saving a message', async () => {
+      await expect(service.createMessage(42, { content }, 99)).rejects.toThrow(
+        new ForbiddenException('Only request participants can access this conversation'),
+      );
+
+      expectNoMessageWrite();
+    });
+
+    it('should derive message identities and unread state from trusted arguments instead of extra DTO properties', async () => {
+      const forgedDto = {
+        content,
+        id: 999,
+        serviceRequestId: 999,
+        authorUserId: 99,
+        createdAt: new Date('2000-01-01T00:00:00.000Z'),
+        readAt: createdAt,
+        authorUser: { id: 99, firstName: 'Forged', lastName: 'Author' },
+      } satisfies CreateServiceRequestMessageDto & Record<string, unknown>;
+
+      const result = await service.createMessage(42, forgedDto, 8);
+
+      expect(messageRepositoryMock.create).toHaveBeenCalledExactlyOnceWith({
+        content,
+        serviceRequestId: 42,
+        authorUserId: 8,
+        readAt: null,
+      });
+      expect(result.id).toBe(101);
+      expect(result.createdAt).toEqual(createdAt);
+      expect(result.readAt).toBeNull();
+      expect(result.author).toEqual(authors[8]);
+    });
+
+    it('should keep historical conversations usable by their recorded participants after provider and offering deletion', async () => {
+      conversation.serviceProviderId = null;
+      conversation.serviceOfferingId = null;
+      conversation.status = ServiceRequestStatus.COMPLETED;
+
+      const result = await service.createMessage(42, { content }, 7);
+
+      expect(result.serviceRequestId).toBe(42);
+      expect(result.authorUserId).toBe(7);
+      expect(result.author).toEqual(authors[7]);
+      expect(providerServiceMock.findOne).not.toHaveBeenCalled();
+      expect(offeringRepositoryMock.findOneBy).not.toHaveBeenCalled();
+      expect(conversation.status).toBe(ServiceRequestStatus.COMPLETED);
+    });
+
+    it('should propagate a request lookup failure without attempting to write a message', async () => {
+      const error = new Error('Request database unavailable');
+      requestRepositoryMock.findOneBy.mockRejectedValue(error);
+
+      await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
+
+      expectNoMessageWrite();
+    });
+
+    it('should propagate a message save failure without reloading or returning a successful response', async () => {
+      const error = new Error('Message database unavailable');
+      messageRepositoryMock.save.mockRejectedValue(error);
+
+      await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
+
+      expect(messageRepositoryMock.findOneOrFail).not.toHaveBeenCalled();
+    });
+
+    it('should propagate a reload failure after saving instead of returning an incomplete message', async () => {
+      const error = new Error('Message reload failed');
+      messageRepositoryMock.findOneOrFail.mockRejectedValue(error);
+
+      await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
+
+      expect(messageRepositoryMock.save).toHaveBeenCalledOnce();
+    });
+
+    it('should wait for the participant check before creating a message', async () => {
+      let finishLookup!: (request: ServiceRequest | null) => void;
+      requestRepositoryMock.findOneBy.mockReturnValue(
+        new Promise<ServiceRequest | null>((resolve) => {
+          finishLookup = resolve;
+        }),
+      );
+      const response = service.createMessage(42, { content }, 99);
+      const rejection = expect(response).rejects.toThrow(ForbiddenException);
+
+      expectNoMessageWrite();
+      finishLookup(conversation);
+      await rejection;
+      expectNoMessageWrite();
+    });
+  });
 
   describe('updateStatus', () => {
     let statusRequest: ServiceRequest;

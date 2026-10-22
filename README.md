@@ -118,6 +118,7 @@ The following operations require a valid access token:
 - `GET /service-requests/sent`
 - `GET /service-requests/received`
 - `PATCH /service-requests/:id/status`
+- `POST /service-requests/:id/messages`
 
 Provider, offering and review consultation endpoints remain public.
 
@@ -154,6 +155,7 @@ All service request endpoints require a valid access token:
 - `GET /service-requests/sent` lists requests sent by the authenticated account.
 - `GET /service-requests/received` lists requests addressed to the authenticated account.
 - `PATCH /service-requests/:id/status` changes the status of a request addressed to the authenticated account and returns `200 OK`.
+- `POST /service-requests/:id/messages` sends a reply as either participant and returns `201 Created`.
 
 The creation body contains only the message:
 
@@ -255,6 +257,42 @@ instead of overwriting that decision. Refresh the request before trying again.
 A status update leaves the message, participants, creation date and offering
 snapshots unchanged. Sent and received GET endpoints never change the status;
 marking a request as read requires an explicit PATCH request.
+
+## Service request messages
+
+The `CreateServiceRequestMessagesTable` migration adds a separate table for
+replies to service requests. The initial request text remains in
+`service_requests.message`. Each reply stores its content, creation date,
+nullable `readAt`, request id and author account id. New messages start unread.
+A composite non-unique index on request id, creation date and id supports
+chronological history; another index covers the author id.
+
+Deleting a request cascades to its replies. Deleting an author account is
+restricted while its messages exist. Deleting only an offering or provider
+preserves the retained request and its messages. Reverting this migration
+removes the messages table and its contents while retaining existing tables.
+
+`POST /service-requests/:id/messages` sends a reply and returns `201 Created`.
+It requires a valid bearer token and access as the recorded requester or
+recipient. A missing request returns `404 Not Found`; an unrelated account
+receives `403 Forbidden`. Access remains available after offering or provider
+deletion because it uses the participants stored on the retained request.
+
+The body contains only `content`, a string with at least one non-whitespace
+character and a maximum length of 2000 characters. Empty or invalid content
+and additional body fields return `400 Bad Request`. The API derives the
+author from the authenticated account and sets `readAt` to `null`. It preserves
+the submitted text, including surrounding whitespace and line breaks.
+
+The response contains `id`, `content`, `createdAt`, `readAt`, `serviceRequestId`,
+`authorUserId` and `author`. The author object contains only `id`, `firstName`
+and `lastName`; account emails, password hashes and internal relations are
+excluded. Sending a reply does not change the request's status or snapshots,
+or mark earlier messages as read.
+
+Conversation history endpoints, recipient-controlled read tracking and frontend
+conversations will follow. In-app notifications, real-time delivery and delayed
+email reminders for unread messages are planned later.
 
 ## Reviews
 
@@ -396,5 +434,6 @@ migrations, unit tests and end-to-end tests.
 
 ## Planned improvements
 
-- Service request reply messages
-- Frontend integration of completed-request reviews
+- Conversation history endpoints, frontend conversations and unread-message tracking
+- Real-time message notifications
+- Delayed email reminders for unread messages
