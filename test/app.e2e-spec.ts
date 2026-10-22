@@ -2291,7 +2291,7 @@ describe('AppController (e2e)', () => {
         }
       },
     );
-    describe('conversation message creation', () => {
+    describe('conversation messages', () => {
       const route = '/service-requests/:id/messages';
       const content = '  Bonjour, disponible samedi ?\nMerci !  ';
       let original: ServiceRequest;
@@ -2481,6 +2481,232 @@ describe('AppController (e2e)', () => {
           });
         },
       );
+
+      async function seedHistory() {
+        const other = await sendRequest({ message: 'Autre discussion privée' }).expect(201);
+        const at = new Date('2026-10-22T10:00:00.000Z');
+        const later = new Date('2026-10-22T11:00:00.000Z');
+        const readAt = new Date('2026-10-22T10:30:00.000Z');
+        await messagesRepository.save([
+          {
+            id: 103,
+            content: 'Dernière réponse',
+            serviceRequestId: original.id,
+            authorUserId: ownerId,
+            createdAt: later,
+            readAt: null,
+          },
+          {
+            id: 102,
+            content: 'Deuxième au même instant',
+            serviceRequestId: original.id,
+            authorUserId: requesterId,
+            createdAt: at,
+            readAt: null,
+          },
+          {
+            id: 101,
+            content: 'Première au même instant',
+            serviceRequestId: original.id,
+            authorUserId: ownerId,
+            createdAt: at,
+            readAt,
+          },
+          {
+            id: 104,
+            content: 'Message réservé à une autre discussion',
+            serviceRequestId: other.body.id,
+            authorUserId: requesterId,
+            createdAt: at,
+            readAt: null,
+          },
+        ]);
+        return {
+          otherId: other.body.id,
+          snapshot: await messagesRepository.find({ order: { id: 'ASC' } }),
+          expected: [
+            {
+              id: 101,
+              content: 'Première au même instant',
+              serviceRequestId: original.id,
+              authorUserId: ownerId,
+              createdAt: at.toISOString(),
+              readAt: readAt.toISOString(),
+              author: { id: ownerId, firstName: 'Alice', lastName: 'Martin' },
+            },
+            {
+              id: 102,
+              content: 'Deuxième au même instant',
+              serviceRequestId: original.id,
+              authorUserId: requesterId,
+              createdAt: at.toISOString(),
+              readAt: null,
+              author: { id: requesterId, firstName: 'Bruno', lastName: 'Leroy' },
+            },
+            {
+              id: 103,
+              content: 'Dernière réponse',
+              serviceRequestId: original.id,
+              authorUserId: ownerId,
+              createdAt: later.toISOString(),
+              readAt: null,
+              author: { id: ownerId, firstName: 'Alice', lastName: 'Martin' },
+            },
+          ],
+        };
+      }
+
+      function getMessages(token = requesterToken, id: number | string = original.id) {
+        return request(app.getHttpServer())
+          .get(`/service-requests/${id}/messages`)
+          .set('Authorization', `Bearer ${token}`);
+      }
+
+      it.each(['requester', 'recipient'] as const)(
+        `${route} (GET) should let the %s read only this conversation in date and id order without changing read dates or exposing private fields`,
+        async (actor) => {
+          const history = await seedHistory();
+          const token = actor === 'requester' ? requesterToken : ownerToken;
+
+          for (let read = 0; read < 2; read++) {
+            const response = await getMessages(token).expect(200);
+            expect(response.body).toEqual(history.expected);
+          }
+
+          expect(await messagesRepository.find({ order: { id: 'ASC' } })).toEqual(history.snapshot);
+          expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+        },
+      );
+
+      it(`${route} (GET) should return an empty array when the accessible request has no replies`, async () => {
+        const response = await getMessages().expect(200);
+
+        expect(response.body).toEqual([]);
+        await expectNoMessage();
+      });
+
+      it.each([false, true])(
+        `${route} (GET) should forbid an unrelated account regardless of whether the conversation contains messages (%s)`,
+        async (withMessage) => {
+          if (withMessage) await postMessage().expect(201);
+          const before = await messagesRepository.find();
+          const token = await getAccessToken('message-reader-outsider@example.com');
+
+          const response = await getMessages(token).expect(403);
+
+          expect(response.body.message).toBe(
+            'Only request participants can access this conversation',
+          );
+          expect(await messagesRepository.find()).toEqual(before);
+          expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+        },
+      );
+
+      it.each(['missing', 'invalid', 'expired'])(
+        `${route} (GET) should reject a %s bearer token without modifying message read dates`,
+        async (kind) => {
+          await postMessage().expect(201);
+          const before = await messagesRepository.find();
+          const pending = request(app.getHttpServer()).get(
+            `/service-requests/${original.id}/messages`,
+          );
+          if (kind === 'invalid') pending.set('Authorization', 'Bearer invalid-token');
+          if (kind === 'expired') {
+            const token = await app
+              .get(JwtService)
+              .signAsync({ sub: String(requesterId) }, { expiresIn: -1 });
+            pending.set('Authorization', `Bearer ${token}`);
+          }
+
+          await pending.expect(401);
+
+          expect(await messagesRepository.find()).toEqual(before);
+        },
+      );
+
+      it.each([
+        { id: 'not-a-number', expected: 400 },
+        { id: '1.5', expected: 400 },
+        { id: '999999', expected: 404 },
+      ])(`${route} (GET) should return $expected for request id $id`, async ({ id, expected }) => {
+        await getMessages(requesterToken, id).expect(expected);
+
+        await expectNoMessage();
+      });
+
+      it(`${route} (GET) should ignore client-supplied conversation and account query filters`, async () => {
+        const history = await seedHistory();
+
+        const response = await getMessages()
+          .query({
+            serviceRequestId: history.otherId,
+            authorUserId: 999,
+            userId: 999,
+          })
+          .expect(200);
+
+        expect(response.body).toEqual(history.expected);
+        expect(await messagesRepository.find({ order: { id: 'ASC' } })).toEqual(history.snapshot);
+      });
+
+      it.each(['offering', 'provider'] as const)(
+        `${route} (GET) should preserve history access for both participants after %s deletion`,
+        async (target) => {
+          const history = await seedHistory();
+          await request(app.getHttpServer())
+            .delete(
+              target === 'offering'
+                ? `/service-providers/${providerId}/service-offerings/${offering.id}`
+                : `/service-providers/${providerId}`,
+            )
+            .set('Authorization', `Bearer ${ownerToken}`)
+            .expect(204);
+
+          for (const token of [requesterToken, ownerToken]) {
+            const response = await getMessages(token).expect(200);
+            expect(response.body).toEqual(history.expected);
+          }
+          expect(await messagesRepository.find({ order: { id: 'ASC' } })).toEqual(history.snapshot);
+        },
+      );
+
+      it(`${route} (GET) should return newly posted replies from both participants without marking either as read`, async () => {
+        await getMessages().expect(200).expect([]);
+        const first = await postMessage({ content: 'Bonjour, samedi ?' }).expect(201);
+        const second = await postMessage({ content: 'Oui, samedi matin.' }, ownerToken).expect(201);
+
+        for (const token of [requesterToken, ownerToken]) {
+          const response = await getMessages(token).expect(200);
+          expect(response.body).toEqual([first.body, second.body]);
+          expect(
+            response.body.every((message: { readAt: string | null }) => message.readAt === null),
+          ).toBe(true);
+        }
+        expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+      });
+
+      it(`${route} (GET) should document an authenticated 200 array response and its access errors in Swagger`, () => {
+        const document = SwaggerModule.createDocument(
+          app,
+          new DocumentBuilder().addBearerAuth().build(),
+        );
+        const operation = document.paths['/service-requests/{id}/messages'].get!;
+
+        expect(operation.responses['200']).toMatchObject({
+          content: {
+            'application/json': {
+              schema: {
+                type: 'array',
+                items: { $ref: '#/components/schemas/ServiceRequestMessageResponseDto' },
+              },
+            },
+          },
+        });
+        expect(operation.responses).not.toHaveProperty('201');
+        for (const status of ['400', '401', '403', '404'])
+          expect(operation.responses).toHaveProperty(status);
+        expect(operation.security).toEqual(expect.arrayContaining([{ bearer: [] }]));
+      });
 
       it(`${route} (POST) should document its 201 response and content validation in Swagger`, () => {
         const document = SwaggerModule.createDocument(

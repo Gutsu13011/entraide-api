@@ -157,6 +157,20 @@ export class ServiceRequestsService {
     return this.toMessageResponse(message);
   }
 
+  async findMessages(
+    serviceRequestId: number,
+    userId: number,
+  ): Promise<ServiceRequestMessageResponseDto[]> {
+    const serviceRequest = await this.findRequestForParticipant(serviceRequestId, userId);
+    const messages = await this.serviceRequestMessageRepository.find({
+      where: { serviceRequestId: serviceRequest.id },
+      relations: { authorUser: true },
+      order: { createdAt: 'ASC', id: 'ASC' },
+    });
+
+    return messages.map((message) => this.toMessageResponse(message));
+  }
+
   private async findRequestForParticipant(
     serviceRequestId: number,
     userId: number,

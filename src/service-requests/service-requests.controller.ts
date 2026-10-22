@@ -138,4 +138,20 @@ export class ServiceRequestsController {
       request.user.id,
     );
   }
+
+  @ApiOperation({ summary: 'List messages in a service request conversation' })
+  @ApiOkResponse({ type: ServiceRequestMessageResponseDto, isArray: true })
+  @ApiBadRequestResponse({ description: 'The request identifier is invalid' })
+  @ApiUnauthorizedResponse({ description: 'Missing, invalid or expired access token' })
+  @ApiForbiddenResponse({ description: 'Only request participants can access this conversation' })
+  @ApiNotFoundResponse({ description: 'Service request not found' })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('service-requests/:id/messages')
+  findMessages(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() request: Request & { user: { id: number } },
+  ): Promise<ServiceRequestMessageResponseDto[]> {
+    return this.serviceRequestsService.findMessages(id, request.user.id);
+  }
 }

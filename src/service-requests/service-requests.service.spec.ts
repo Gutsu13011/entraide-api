@@ -24,7 +24,12 @@ describe('ServiceRequestsService', () => {
     findOneBy: vi.fn(),
     update: vi.fn(),
   };
-  const messageRepositoryMock = { create: vi.fn(), save: vi.fn(), findOneOrFail: vi.fn() };
+  const messageRepositoryMock = {
+    create: vi.fn(),
+    save: vi.fn(),
+    findOneOrFail: vi.fn(),
+    find: vi.fn(),
+  };
   const offeringRepositoryMock = { findOneBy: vi.fn() };
   const providerServiceMock = { findOne: vi.fn() };
   const dto: CreateServiceRequestDto = { message: 'Bonjour, je souhaite repeindre ma chambre.' };
@@ -500,6 +505,188 @@ describe('ServiceRequestsService', () => {
       finishLookup(conversation);
       await rejection;
       expectNoMessageWrite();
+    });
+  });
+
+  describe('findMessages', () => {
+    let conversation: ServiceRequest;
+    let storedMessages: ServiceRequestMessage[];
+    const sentAt = new Date('2026-10-22T10:00:00.000Z');
+    const repliedAt = new Date('2026-10-22T11:00:00.000Z');
+    const readAt = new Date('2026-10-22T10:30:00.000Z');
+
+    function expectNoWrites() {
+      expect(messageRepositoryMock.create).not.toHaveBeenCalled();
+      expect(messageRepositoryMock.save).not.toHaveBeenCalled();
+      expect(requestRepositoryMock.update).not.toHaveBeenCalled();
+      expect(requestRepositoryMock.save).not.toHaveBeenCalled();
+    }
+
+    beforeEach(() => {
+      conversation = Object.assign(new ServiceRequest(), {
+        id: 42,
+        requesterUserId: 8,
+        recipientUserId: 7,
+        status: ServiceRequestStatus.ACCEPTED,
+        serviceProviderId: 1,
+        serviceOfferingId: 12,
+      });
+      storedMessages = [
+        Object.assign(new ServiceRequestMessage(), {
+          id: 101,
+          content: 'Disponible samedi ?',
+          createdAt: sentAt,
+          readAt,
+          serviceRequestId: 42,
+          authorUserId: 8,
+          serviceRequest: conversation,
+          internalNote: 'Private message detail',
+          authorUser: {
+            id: 8,
+            firstName: 'Alice',
+            lastName: 'Martin',
+            email: 'private-a@example.test',
+            passwordHash: 'private-hash-a',
+          },
+        }),
+        Object.assign(new ServiceRequestMessage(), {
+          id: 102,
+          content: 'Oui, samedi matin.',
+          createdAt: repliedAt,
+          readAt: null,
+          serviceRequestId: 42,
+          authorUserId: 7,
+          serviceRequest: conversation,
+          internalNote: 'Private message detail',
+          authorUser: {
+            id: 7,
+            firstName: 'Bruno',
+            lastName: 'Leroy',
+            email: 'private-b@example.test',
+            passwordHash: 'private-hash-b',
+          },
+        }),
+      ];
+      requestRepositoryMock.findOneBy.mockResolvedValue(conversation);
+      messageRepositoryMock.find.mockResolvedValue(storedMessages);
+    });
+
+    it.each([8, 7])(
+      'should let participant %s read only the selected conversation using chronological ordering and safe author fields',
+      async (userId) => {
+        const result = await service.findMessages(42, userId);
+
+        expect(requestRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({ id: 42 });
+        expect(messageRepositoryMock.find).toHaveBeenCalledExactlyOnceWith({
+          where: { serviceRequestId: 42 },
+          relations: { authorUser: true },
+          order: { createdAt: 'ASC', id: 'ASC' },
+        });
+        expect(result).toEqual([
+          {
+            id: 101,
+            content: 'Disponible samedi ?',
+            createdAt: sentAt,
+            readAt,
+            serviceRequestId: 42,
+            authorUserId: 8,
+            author: { id: 8, firstName: 'Alice', lastName: 'Martin' },
+          },
+          {
+            id: 102,
+            content: 'Oui, samedi matin.',
+            createdAt: repliedAt,
+            readAt: null,
+            serviceRequestId: 42,
+            authorUserId: 7,
+            author: { id: 7, firstName: 'Bruno', lastName: 'Leroy' },
+          },
+        ]);
+        expect(storedMessages[0].readAt).toEqual(readAt);
+        expect(storedMessages[1].readAt).toBeNull();
+        expect(conversation.status).toBe(ServiceRequestStatus.ACCEPTED);
+        expectNoWrites();
+      },
+    );
+
+    it('should return an empty array for an accessible conversation without replies', async () => {
+      messageRepositoryMock.find.mockResolvedValue([]);
+
+      await expect(service.findMessages(42, 8)).resolves.toEqual([]);
+
+      expect(requestRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({ id: 42 });
+      expect(messageRepositoryMock.find).toHaveBeenCalledOnce();
+      expectNoWrites();
+    });
+
+    it('should refuse a missing conversation before reading its messages', async () => {
+      requestRepositoryMock.findOneBy.mockResolvedValue(null);
+
+      await expect(service.findMessages(42, 8)).rejects.toThrow(
+        new NotFoundException('Service request not found'),
+      );
+
+      expect(messageRepositoryMock.find).not.toHaveBeenCalled();
+      expectNoWrites();
+    });
+
+    it('should refuse an unrelated account before reading any messages', async () => {
+      await expect(service.findMessages(42, 99)).rejects.toThrow(
+        new ForbiddenException('Only request participants can access this conversation'),
+      );
+
+      expect(messageRepositoryMock.find).not.toHaveBeenCalled();
+      expectNoWrites();
+    });
+
+    it('should propagate a participant lookup failure without reading any messages', async () => {
+      const error = new Error('Request lookup unavailable');
+      requestRepositoryMock.findOneBy.mockRejectedValue(error);
+
+      await expect(service.findMessages(42, 8)).rejects.toBe(error);
+
+      expect(messageRepositoryMock.find).not.toHaveBeenCalled();
+      expectNoWrites();
+    });
+
+    it('should propagate a message query failure instead of treating it as an empty conversation', async () => {
+      const error = new Error('Message query unavailable');
+      messageRepositoryMock.find.mockRejectedValue(error);
+
+      await expect(service.findMessages(42, 8)).rejects.toBe(error);
+
+      expectNoWrites();
+    });
+
+    it('should keep a historical conversation readable after its provider and offering are deleted', async () => {
+      conversation.serviceProviderId = null;
+      conversation.serviceOfferingId = null;
+      conversation.status = ServiceRequestStatus.COMPLETED;
+
+      const result = await service.findMessages(42, 7);
+
+      expect(result).toHaveLength(2);
+      expect(result.every((message) => message.serviceRequestId === 42)).toBe(true);
+      expect(providerServiceMock.findOne).not.toHaveBeenCalled();
+      expect(offeringRepositoryMock.findOneBy).not.toHaveBeenCalled();
+      expectNoWrites();
+    });
+
+    it('should finish checking participation before starting the message query', async () => {
+      let finishLookup!: (request: ServiceRequest) => void;
+      requestRepositoryMock.findOneBy.mockReturnValue(
+        new Promise<ServiceRequest>((resolve) => {
+          finishLookup = resolve;
+        }),
+      );
+
+      const result = service.findMessages(42, 8);
+
+      expect(messageRepositoryMock.find).not.toHaveBeenCalled();
+      finishLookup(conversation);
+      await expect(result).resolves.toHaveLength(2);
+      expect(messageRepositoryMock.find).toHaveBeenCalledOnce();
+      expectNoWrites();
     });
   });
 

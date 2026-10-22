@@ -119,6 +119,7 @@ The following operations require a valid access token:
 - `GET /service-requests/received`
 - `PATCH /service-requests/:id/status`
 - `POST /service-requests/:id/messages`
+- `GET /service-requests/:id/messages`
 
 Provider, offering and review consultation endpoints remain public.
 
@@ -156,6 +157,7 @@ All service request endpoints require a valid access token:
 - `GET /service-requests/received` lists requests addressed to the authenticated account.
 - `PATCH /service-requests/:id/status` changes the status of a request addressed to the authenticated account and returns `200 OK`.
 - `POST /service-requests/:id/messages` sends a reply as either participant and returns `201 Created`.
+- `GET /service-requests/:id/messages` returns the conversation replies to either participant with `200 OK`.
 
 The creation body contains only the message:
 
@@ -290,9 +292,18 @@ and `lastName`; account emails, password hashes and internal relations are
 excluded. Sending a reply does not change the request's status or snapshots,
 or mark earlier messages as read.
 
-Conversation history endpoints, recipient-controlled read tracking and frontend
-conversations will follow. In-app notifications, real-time delivery and delayed
-email reminders for unread messages are planned later.
+`GET /service-requests/:id/messages` returns only that request's replies, ordered
+by creation date ascending and then id ascending. It requires the same
+participant access check as sending, including for an empty conversation. An
+accessible request without replies returns `[]`. Query parameters cannot
+change the selected request or authenticated account. Each item uses the safe
+message response described above. Repeated reads do not change message read
+dates or request status, and history remains available after offering or
+provider deletion. The initial request text remains separate from this list.
+
+Recipient-controlled read tracking and frontend conversations will follow.
+In-app notifications, real-time delivery and delayed email reminders for
+unread messages are planned later.
 
 ## Reviews
 
@@ -434,6 +445,6 @@ migrations, unit tests and end-to-end tests.
 
 ## Planned improvements
 
-- Conversation history endpoints, frontend conversations and unread-message tracking
+- Frontend conversations and unread-message tracking
 - Real-time message notifications
 - Delayed email reminders for unread messages

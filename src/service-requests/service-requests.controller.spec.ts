@@ -117,4 +117,35 @@ describe('ServiceRequestsController', () => {
       await module.close();
     }
   });
+  it('should pass the conversation id and authenticated reader id to message listing and return the service array', async () => {
+    const serviceMock = { findMessages: vi.fn() };
+    const module = await Test.createTestingModule({
+      controllers: [ServiceRequestsController],
+      providers: [{ provide: ServiceRequestsService, useValue: serviceMock }],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
+    try {
+      const controller = module.get(ServiceRequestsController);
+      const requestMock = { user: { id: 8 } } as Request & { user: { id: number } };
+      const response = [
+        Object.assign(new ServiceRequestMessageResponseDto(), {
+          id: 101,
+          content: 'Bonjour',
+          serviceRequestId: 42,
+          authorUserId: 7,
+          readAt: null,
+        }),
+      ];
+      serviceMock.findMessages.mockResolvedValue(response);
+
+      const result = await controller.findMessages(42, requestMock);
+
+      expect(serviceMock.findMessages).toHaveBeenCalledExactlyOnceWith(42, 8);
+      expect(result).toBe(response);
+    } finally {
+      await module.close();
+    }
+  });
 });
