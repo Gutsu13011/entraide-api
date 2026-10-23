@@ -170,4 +170,29 @@ describe('ServiceRequestsController', () => {
       await module.close();
     }
   });
+
+  it('should count unread replies using only the authenticated account and return the service summary', async () => {
+    const summary = { sentRequests: 4, receivedRequests: 5, total: 9 };
+    const serviceMock = { getUnreadMessageCounts: vi.fn().mockResolvedValue(summary) };
+    const module = await Test.createTestingModule({
+      controllers: [ServiceRequestsController],
+      providers: [{ provide: ServiceRequestsService, useValue: serviceMock }],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
+    try {
+      const controller = module.get(ServiceRequestsController);
+      const requestMock = { user: { id: 8 }, query: { userId: '99' } } as unknown as Request & {
+        user: { id: number };
+      };
+
+      const result = await controller.getUnreadMessageCounts(requestMock);
+
+      expect(serviceMock.getUnreadMessageCounts).toHaveBeenCalledExactlyOnceWith(8);
+      expect(result).toBe(summary);
+    } finally {
+      await module.close();
+    }
+  });
 });

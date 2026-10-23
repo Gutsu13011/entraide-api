@@ -33,6 +33,7 @@ import { UpdateServiceRequestStatusDto } from './dto/update-service-request-stat
 import { CreateServiceRequestMessageDto } from './dto/create-service-request-message.dto.js';
 import { ServiceRequestMessageResponseDto } from './dto/service-request-message-response.dto.js';
 import { MarkServiceRequestMessagesReadDto } from './dto/mark-service-request-messages-read.dto.js';
+import { ServiceRequestUnreadMessageCountsDto } from './dto/service-request-unread-message-counts.dto.js';
 
 @ApiTags('service-requests')
 @Controller()
@@ -183,5 +184,21 @@ export class ServiceRequestsController {
       markServiceRequestMessagesReadDto,
       request.user.id,
     );
+  }
+
+  @ApiOperation({
+    summary: 'Count unread conversation replies for the authenticated user',
+  })
+  @ApiOkResponse({ type: ServiceRequestUnreadMessageCountsDto })
+  @ApiUnauthorizedResponse({
+    description: 'Missing, invalid or expired access token',
+  })
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('service-requests/messages/unread-counts')
+  getUnreadMessageCounts(
+    @Req() request: Request & { user: { id: number } },
+  ): Promise<ServiceRequestUnreadMessageCountsDto> {
+    return this.serviceRequestsService.getUnreadMessageCounts(request.user.id);
   }
 }

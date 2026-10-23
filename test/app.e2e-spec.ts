@@ -3066,6 +3066,275 @@ describe('AppController (e2e)', () => {
     });
   });
 
+  describe('unread conversation message counts', () => {
+    const route = '/service-requests/messages/unread-counts';
+    let tokens: Record<'A' | 'B' | 'C', string>;
+    let userIds: Record<'A' | 'B' | 'C', number>;
+    let requests: ServiceRequest[];
+    let messages: ServiceRequestMessage[];
+    let requestsRepository: Repository<ServiceRequest>;
+    let messagesRepository: Repository<ServiceRequestMessage>;
+    let offeringId: number;
+
+    beforeEach(async () => {
+      tokens = {
+        A: await getAccessToken('counts-a@example.com'),
+        B: await getAccessToken('counts-b@example.com'),
+        C: await getAccessToken('counts-c@example.com'),
+      };
+      const usersService = app.get(UsersService);
+      userIds = {
+        A: (await usersService.findByEmail('counts-a@example.com'))!.id,
+        B: (await usersService.findByEmail('counts-b@example.com'))!.id,
+        C: (await usersService.findByEmail('counts-c@example.com'))!.id,
+      };
+      const providers = app.get<Repository<ServiceProvider>>(getRepositoryToken(ServiceProvider));
+      await providers.update(1, { ownerUserId: userIds.B });
+      const offerings = app.get<Repository<ServiceOffering>>(getRepositoryToken(ServiceOffering));
+      const offering = await offerings.save(
+        offerings.create({
+          title: 'Conseil',
+          description: 'Conseil de démonstration',
+          pricingType: ServicePricingType.FREE,
+          hourlyRate: null,
+          serviceProviderId: 1,
+        }),
+      );
+      offeringId = offering.id;
+      requestsRepository = app.get<Repository<ServiceRequest>>(getRepositoryToken(ServiceRequest));
+      messagesRepository = app.get<Repository<ServiceRequestMessage>>(
+        getRepositoryToken(ServiceRequestMessage),
+      );
+      requests = await requestsRepository.save(
+        [
+          { from: userIds.A, to: userIds.B, status: ServiceRequestStatus.ACCEPTED },
+          { from: userIds.B, to: userIds.A, status: ServiceRequestStatus.COMPLETED },
+          { from: userIds.B, to: userIds.C, status: ServiceRequestStatus.REJECTED },
+          { from: userIds.A, to: userIds.C, status: ServiceRequestStatus.SENT },
+          { from: userIds.C, to: userIds.A, status: ServiceRequestStatus.READ },
+        ].map((entry, index) =>
+          requestsRepository.create({
+            message: `Texte initial privé ${index}`,
+            requesterUserId: entry.from,
+            recipientUserId: entry.to,
+            status: entry.status,
+            serviceProviderId: index === 0 ? 1 : null,
+            serviceOfferingId: index === 0 ? offeringId : null,
+            offeringTitleSnapshot: 'Conseil historique',
+            offeringPricingTypeSnapshot: ServicePricingType.FREE,
+            offeringHourlyRateSnapshot: null,
+          }),
+        ),
+      );
+      const reply = (requestIndex: number, authorUserId: number, read = false) =>
+        messagesRepository.create({
+          serviceRequestId: requests[requestIndex].id,
+          authorUserId,
+          content: `Réponse privée ${requestIndex} de ${authorUserId}`,
+          readAt: read ? new Date('2026-10-23T09:10:00.000Z') : null,
+        });
+      messages = await messagesRepository.save([
+        reply(0, userIds.B),
+        reply(0, userIds.B),
+        reply(0, userIds.A),
+        reply(0, userIds.B, true),
+        reply(1, userIds.B),
+        reply(1, userIds.A),
+        reply(1, userIds.B, true),
+        reply(2, userIds.B),
+        reply(2, userIds.C),
+        reply(3, userIds.C),
+        reply(3, userIds.A),
+        reply(4, userIds.C),
+        reply(4, userIds.A),
+      ]);
+    });
+
+    function getCounts(token = tokens.A) {
+      return request(app.getHttpServer()).get(route).set('Authorization', `Bearer ${token}`);
+    }
+
+    it.each([
+      { account: 'A' as const, expected: { sentRequests: 3, receivedRequests: 2, total: 5 } },
+      { account: 'B' as const, expected: { sentRequests: 2, receivedRequests: 1, total: 3 } },
+      { account: 'C' as const, expected: { sentRequests: 1, receivedRequests: 2, total: 3 } },
+    ])(
+      `${route} (GET) should isolate account $account and count only received unread replies across its request lists`,
+      async ({ account, expected }) => {
+        const response = await getCounts(tokens[account]).expect(200);
+
+        expect(response.body).toEqual(expected);
+      },
+    );
+
+    it(`${route} (GET) should return three zeros for an account without requests`, async () => {
+      const token = await getAccessToken('counts-empty@example.com');
+
+      const response = await getCounts(token).expect(200);
+
+      expect(response.body).toEqual({ sentRequests: 0, receivedRequests: 0, total: 0 });
+    });
+
+    it(`${route} (GET) should not count initial request texts when there are no conversation replies`, async () => {
+      await messagesRepository.clear();
+
+      const response = await getCounts().expect(200);
+
+      expect(response.body).toEqual({ sentRequests: 0, receivedRequests: 0, total: 0 });
+      expect(await requestsRepository.count()).toBe(5);
+    });
+
+    it(`${route} (GET) should return zero when all conversation replies are already read`, async () => {
+      await messagesRepository.update(
+        messages.map((message) => message.id),
+        { readAt: new Date() },
+      );
+
+      const response = await getCounts().expect(200);
+
+      expect(response.body).toEqual({ sentRequests: 0, receivedRequests: 0, total: 0 });
+    });
+
+    it(`${route} (GET) should leave message read dates and request statuses unchanged on repeated consultation`, async () => {
+      const messagesBefore = await messagesRepository.find({ order: { id: 'ASC' } });
+      const requestsBefore = await requestsRepository.find({ order: { id: 'ASC' } });
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await getCounts().expect(200);
+        expect(response.body).toEqual({ sentRequests: 3, receivedRequests: 2, total: 5 });
+      }
+
+      expect(await messagesRepository.find({ order: { id: 'ASC' } })).toEqual(messagesBefore);
+      expect(await requestsRepository.find({ order: { id: 'ASC' } })).toEqual(requestsBefore);
+    });
+
+    it(`${route} (GET) should reflect bounded read updates and later replies without affecting the other participant's count`, async () => {
+      await request(app.getHttpServer())
+        .get(`/service-requests/${requests[0].id}/messages`)
+        .set('Authorization', `Bearer ${tokens.A}`)
+        .expect(200);
+      expect((await getCounts().expect(200)).body).toEqual({
+        sentRequests: 3,
+        receivedRequests: 2,
+        total: 5,
+      });
+      const markRead = (upToMessageId: number) =>
+        request(app.getHttpServer())
+          .patch(`/service-requests/${requests[0].id}/messages/read`)
+          .set('Authorization', `Bearer ${tokens.A}`)
+          .send({ upToMessageId });
+
+      await markRead(messages[0].id).expect(204);
+      expect((await getCounts().expect(200)).body).toEqual({
+        sentRequests: 2,
+        receivedRequests: 2,
+        total: 4,
+      });
+      await markRead(messages[3].id).expect(204);
+      expect((await getCounts().expect(200)).body).toEqual({
+        sentRequests: 1,
+        receivedRequests: 2,
+        total: 3,
+      });
+      expect((await getCounts(tokens.B).expect(200)).body).toEqual({
+        sentRequests: 2,
+        receivedRequests: 1,
+        total: 3,
+      });
+      await request(app.getHttpServer())
+        .post(`/service-requests/${requests[0].id}/messages`)
+        .set('Authorization', `Bearer ${tokens.B}`)
+        .send({ content: 'Nouvelle réponse après lecture.' })
+        .expect(201);
+      await markRead(messages[3].id).expect(204);
+      expect((await getCounts().expect(200)).body).toEqual({
+        sentRequests: 2,
+        receivedRequests: 2,
+        total: 4,
+      });
+    });
+
+    it.each(['offering', 'provider'] as const)(
+      `${route} (GET) should preserve historical unread counts after %s deletion`,
+      async (target) => {
+        await request(app.getHttpServer())
+          .delete(
+            target === 'offering'
+              ? `/service-providers/1/service-offerings/${offeringId}`
+              : '/service-providers/1',
+          )
+          .set('Authorization', `Bearer ${tokens.B}`)
+          .expect(204);
+
+        const response = await getCounts().expect(200);
+
+        expect(response.body).toEqual({ sentRequests: 3, receivedRequests: 2, total: 5 });
+        expect(await messagesRepository.count()).toBe(13);
+        expect(await requestsRepository.findOneByOrFail({ id: requests[0].id })).toMatchObject({
+          serviceOfferingId: null,
+          serviceProviderId: target === 'provider' ? null : 1,
+        });
+      },
+    );
+
+    it(`${route} (GET) should ignore forged account and read-status query filters`, async () => {
+      const response = await getCounts()
+        .query({
+          userId: userIds.B,
+          requesterUserId: userIds.B,
+          recipientUserId: userIds.B,
+          authorUserId: userIds.A,
+          readAt: 'not-null',
+        })
+        .expect(200);
+
+      expect(response.body).toEqual({ sentRequests: 3, receivedRequests: 2, total: 5 });
+    });
+
+    it.each(['missing', 'invalid', 'expired'] as const)(
+      `${route} (GET) should reject a %s token with 401`,
+      async (kind) => {
+        const pending = request(app.getHttpServer()).get(route);
+        if (kind !== 'missing') {
+          const token =
+            kind === 'invalid'
+              ? 'invalid-token'
+              : await app.get(JwtService).signAsync({ sub: String(userIds.A) }, { expiresIn: -1 });
+          pending.set('Authorization', `Bearer ${token}`);
+        }
+
+        await pending.expect(401);
+        expect(await messagesRepository.count()).toBe(13);
+      },
+    );
+
+    it(`${route} (GET) should document the authenticated 200 response and non-negative count fields in Swagger`, () => {
+      const document = SwaggerModule.createDocument(
+        app,
+        new DocumentBuilder().addBearerAuth().build(),
+      );
+      const operation = document.paths[route].get!;
+
+      expect(operation.responses['200']).toMatchObject({
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ServiceRequestUnreadMessageCountsDto' },
+          },
+        },
+      });
+      expect(operation.responses).toHaveProperty('401');
+      expect(operation.security).toEqual(expect.arrayContaining([{ bearer: [] }]));
+      expect(document.components!.schemas!.ServiceRequestUnreadMessageCountsDto).toMatchObject({
+        required: ['sentRequests', 'receivedRequests', 'total'],
+        properties: {
+          sentRequests: { type: 'number', minimum: 0 },
+          receivedRequests: { type: 'number', minimum: 0 },
+          total: { type: 'number', minimum: 0 },
+        },
+      });
+    });
+  });
+
   describe('service request consultation', () => {
     let tokenA: string;
     let tokenB: string;

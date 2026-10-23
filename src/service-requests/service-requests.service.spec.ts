@@ -26,6 +26,7 @@ describe('ServiceRequestsService', () => {
     update: vi.fn(),
   };
   const messageRepositoryMock = {
+    count: vi.fn(),
     create: vi.fn(),
     save: vi.fn(),
     findOneOrFail: vi.fn(),
@@ -1156,6 +1157,95 @@ describe('ServiceRequestsService', () => {
       expect(settledSpy).toHaveBeenCalledExactlyOnceWith(
         expectedResponse(ServiceRequestStatus.ACCEPTED),
       );
+    });
+  });
+
+  describe('getUnreadMessageCounts', () => {
+    it.each([
+      { sentRequests: 0, receivedRequests: 0, total: 0 },
+      { sentRequests: 4, receivedRequests: 5, total: 9 },
+      { sentRequests: 0, receivedRequests: 3, total: 3 },
+      { sentRequests: 2, receivedRequests: 0, total: 2 },
+    ])(
+      'should return both message counts and their total for $sentRequests sent-list and $receivedRequests received-list replies',
+      async ({ sentRequests, receivedRequests, total }) => {
+        messageRepositoryMock.count
+          .mockResolvedValueOnce(sentRequests)
+          .mockResolvedValueOnce(receivedRequests);
+
+        await expect(service.getUnreadMessageCounts(8)).resolves.toEqual({
+          sentRequests,
+          receivedRequests,
+          total,
+        });
+
+        expect(messageRepositoryMock.count).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it.each([8, 31])(
+      'should scope both counters to participant %s and exclude own or already-read messages without loading message bodies',
+      async (userId) => {
+        messageRepositoryMock.count.mockResolvedValue(0);
+
+        await service.getUnreadMessageCounts(userId);
+
+        expect(messageRepositoryMock.count).toHaveBeenNthCalledWith(1, {
+          where: {
+            readAt: IsNull(),
+            authorUserId: Not(userId),
+            serviceRequest: { requesterUserId: userId },
+          },
+        });
+        expect(messageRepositoryMock.count).toHaveBeenNthCalledWith(2, {
+          where: {
+            readAt: IsNull(),
+            authorUserId: Not(userId),
+            serviceRequest: { recipientUserId: userId },
+          },
+        });
+        expect(messageRepositoryMock.find).not.toHaveBeenCalled();
+        expect(messageRepositoryMock.update).not.toHaveBeenCalled();
+        expect(messageRepositoryMock.save).not.toHaveBeenCalled();
+        expect(requestRepositoryMock.find).not.toHaveBeenCalled();
+        expect(requestRepositoryMock.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['sent', 'received'] as const)(
+      'should propagate a failed %s count instead of returning zeros or a partial summary',
+      async (direction) => {
+        const error = new Error('Count query failed');
+        if (direction === 'received') {
+          messageRepositoryMock.count.mockResolvedValueOnce(4);
+        }
+        messageRepositoryMock.count.mockRejectedValueOnce(error);
+
+        await expect(service.getUnreadMessageCounts(8)).rejects.toBe(error);
+      },
+    );
+
+    it('should wait for the received-list count before resolving the complete summary', async () => {
+      let finishReceivedCount!: (count: number) => void;
+      const receivedCount = new Promise<number>((resolve) => {
+        finishReceivedCount = resolve;
+      });
+      messageRepositoryMock.count.mockResolvedValueOnce(2).mockReturnValueOnce(receivedCount);
+      const settled = vi.fn();
+
+      const pending = service.getUnreadMessageCounts(8);
+      void pending.then(settled, settled);
+      await Promise.resolve();
+
+      expect(messageRepositoryMock.count).toHaveBeenCalledTimes(2);
+      expect(settled).not.toHaveBeenCalled();
+      finishReceivedCount(5);
+      await expect(pending).resolves.toEqual({ sentRequests: 2, receivedRequests: 5, total: 7 });
+      expect(settled).toHaveBeenCalledExactlyOnceWith({
+        sentRequests: 2,
+        receivedRequests: 5,
+        total: 7,
+      });
     });
   });
 });

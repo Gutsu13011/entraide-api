@@ -117,6 +117,7 @@ The following operations require a valid access token:
 - `POST /service-providers/:serviceProviderId/service-offerings/:serviceOfferingId/service-requests`
 - `GET /service-requests/sent`
 - `GET /service-requests/received`
+- `GET /service-requests/messages/unread-counts`
 - `PATCH /service-requests/:id/status`
 - `POST /service-requests/:id/messages`
 - `GET /service-requests/:id/messages`
@@ -156,6 +157,7 @@ All service request endpoints require a valid access token:
   sends a request for an offering and returns `201 Created`.
 - `GET /service-requests/sent` lists requests sent by the authenticated account.
 - `GET /service-requests/received` lists requests addressed to the authenticated account.
+- `GET /service-requests/messages/unread-counts` returns unread received reply counts for both request lists with `200 OK`.
 - `PATCH /service-requests/:id/status` changes the status of a request addressed to the authenticated account and returns `200 OK`.
 - `POST /service-requests/:id/messages` sends a reply as either participant and returns `201 Created`.
 - `GET /service-requests/:id/messages` returns the conversation replies to either participant with `200 OK`.
@@ -318,9 +320,39 @@ existing read dates remain unchanged. Repeating the operation, including when
 no message needs updating, succeeds without replacing prior read dates. This
 operation does not change the request's status. There is no mutating GET route.
 
-Frontend conversations and unread-message counters will follow. In-app
-notifications, real-time delivery and delayed email reminders for unread
-messages are planned later.
+### Unread message counts
+
+`GET /service-requests/messages/unread-counts` requires a valid bearer token
+and returns only the authenticated account's counts:
+
+```json
+{
+  "sentRequests": 3,
+  "receivedRequests": 2,
+  "total": 5
+}
+```
+
+`sentRequests` counts unread replies received in requests sent by that account;
+`receivedRequests` counts unread replies received in requests addressed to it.
+Both count messages, not requests. `total` is their sum. Each count excludes
+messages authored by the authenticated account and messages whose `readAt`
+is already set. Request status is not a filter, so completed or rejected
+conversations remain included. The initial request text is not counted.
+
+The identity comes from the verified token; client-supplied account or
+read-status query filters do not change the result. Accounts with no requests,
+no replies or no unread received replies get three zeros. Missing, invalid or
+expired tokens return `401`. The endpoint does not update read dates or
+request statuses. Counting uses the recorded request participants and continues
+to work after offering or provider deletion. Bounded read updates decrease the
+relevant count; subsequent replies beyond the read boundary remain unread.
+
+The current implementation performs two SQL count queries and returns a single
+HTTP response. It does not load message bodies or persist separate counters.
+Swagger documents the response and its three non-negative numeric fields.
+Frontend unread-message counters, in-app notifications, real-time delivery and
+delayed email reminders for unread messages are planned later.
 
 ## Reviews
 
@@ -462,6 +494,6 @@ migrations, unit tests and end-to-end tests.
 
 ## Planned improvements
 
-- Frontend conversations and unread-message counters
+- Frontend unread-message counters
 - Real-time message notifications
 - Delayed email reminders for unread messages

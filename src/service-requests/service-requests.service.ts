@@ -17,6 +17,7 @@ import { ServiceRequestMessage } from './service-request-message.entity.js';
 import { ServiceRequestMessageResponseDto } from './dto/service-request-message-response.dto.js';
 import { CreateServiceRequestMessageDto } from './dto/create-service-request-message.dto.js';
 import { MarkServiceRequestMessagesReadDto } from './dto/mark-service-request-messages-read.dto.js';
+import { ServiceRequestUnreadMessageCountsDto } from './dto/service-request-unread-message-counts.dto.js';
 
 @Injectable()
 export class ServiceRequestsService {
@@ -196,6 +197,25 @@ export class ServiceRequestsService {
       },
       { readAt: new Date() },
     );
+  }
+
+  async getUnreadMessageCounts(userId: number): Promise<ServiceRequestUnreadMessageCountsDto> {
+    const sentRequests = await this.serviceRequestMessageRepository.count({
+      where: {
+        readAt: IsNull(),
+        authorUserId: Not(userId),
+        serviceRequest: { requesterUserId: userId },
+      },
+    });
+    const receivedRequests = await this.serviceRequestMessageRepository.count({
+      where: {
+        readAt: IsNull(),
+        authorUserId: Not(userId),
+        serviceRequest: { recipientUserId: userId },
+      },
+    });
+
+    return { sentRequests, receivedRequests, total: sentRequests + receivedRequests };
   }
 
   private async findRequestForParticipant(
