@@ -181,4 +181,219 @@ describe('ServiceRequestMessageRemindersService (database integration)', () => {
     expect(await requests.find({ order: { id: 'ASC' } })).toEqual(before.requests);
     expect(await messages.find({ order: { id: 'ASC' } })).toEqual(before.messages);
   });
+
+  describe('prepareReminder', () => {
+    let reminder: ServiceRequestMessageReminder;
+
+    beforeEach(async () => {
+      [reminder] = await seedReminders([{ dueAt: now }]);
+    });
+
+    function addMessage(values: Partial<ServiceRequestMessage> = {}) {
+      return messages.save({
+        serviceRequestId: reminder.serviceRequestId,
+        authorUserId: users[0].id,
+        content: 'Un message reçu',
+        createdAt: new Date(now.getTime() - 60_000),
+        readAt: null,
+        ...values,
+      });
+    }
+
+    async function snapshot() {
+      return {
+        reminders: await reminders.find({ order: { id: 'ASC' } }),
+        requests: await requests.find({ order: { id: 'ASC' } }),
+        messages: await messages.find({ order: { id: 'ASC' } }),
+      };
+    }
+
+    it.each(['missing', 'sent', 'cancelled', 'future'] as const)(
+      'should ignore a %s reminder without changing any stored data',
+      async (kind) => {
+        if (kind === 'sent') {
+          await reminders.update(reminder.id, { status: ReminderStatus.SENT, sentAt: now });
+        } else if (kind === 'cancelled') {
+          await reminders.update(reminder.id, { status: ReminderStatus.CANCELLED });
+        } else if (kind === 'future') {
+          await reminders.update(reminder.id, { dueAt: new Date(now.getTime() + 1) });
+        }
+        const before = await snapshot();
+
+        await expect(
+          service.prepareReminder(kind === 'missing' ? 999_999 : reminder.id, now),
+        ).resolves.toBeNull();
+
+        expect(await snapshot()).toEqual(before);
+      },
+    );
+
+    it.each(['cancelled', 'postponed'] as const)(
+      'should recheck a candidate that was %s after batch selection',
+      async (change) => {
+        const candidates = await service.findDueReminders(now);
+        expect(candidates).toEqual([reminder]);
+        await reminders.update(
+          reminder.id,
+          change === 'cancelled'
+            ? { status: ReminderStatus.CANCELLED }
+            : { dueAt: new Date(now.getTime() + 60_000) },
+        );
+        const before = await snapshot();
+
+        await expect(service.prepareReminder(candidates[0].id, now)).resolves.toBeNull();
+
+        expect(await snapshot()).toEqual(before);
+      },
+    );
+
+    it('should cancel only the target reminder when no received unread message remains, ignoring own, read and other-conversation messages', async () => {
+      const [other] = await seedReminders([{ dueAt: now }]);
+      await reminders.save({
+        serviceRequestId: reminder.serviceRequestId,
+        recipientUserId: users[0].id,
+        dueAt: now,
+      });
+      await reminders.save({
+        serviceRequestId: reminder.serviceRequestId,
+        recipientUserId: reminder.recipientUserId,
+        status: ReminderStatus.SENT,
+        dueAt: now,
+        sentAt: now,
+      });
+      await addMessage({
+        authorUserId: reminder.recipientUserId,
+        createdAt: new Date(now.getTime() - 600_000),
+      });
+      await addMessage({
+        readAt: new Date(now.getTime() - 60_000),
+        createdAt: new Date(now.getTime() - 600_000),
+      });
+      await addMessage({
+        serviceRequestId: other.serviceRequestId,
+        createdAt: new Date(now.getTime() - 600_000),
+      });
+      const before = await snapshot();
+
+      await expect(service.prepareReminder(reminder.id, now)).resolves.toBeNull();
+
+      expect(await snapshot()).toEqual({
+        ...before,
+        reminders: before.reminders.map((row) =>
+          row.id === reminder.id ? { ...row, status: ReminderStatus.CANCELLED } : row,
+        ),
+      });
+      await expect(service.prepareReminder(reminder.id, now)).resolves.toBeNull();
+    });
+
+    it('should postpone to the oldest received unread message plus five minutes after older messages were read', async () => {
+      await seedReminders([{ dueAt: now }]);
+      await addMessage({ createdAt: new Date(now.getTime() - 600_000), readAt: now });
+      await addMessage({
+        createdAt: new Date(now.getTime() - 600_000),
+        authorUserId: reminder.recipientUserId,
+      });
+      // Insert the newer unread reply first: timestamp ordering must take precedence over id.
+      await addMessage({ createdAt: new Date(now.getTime() - 30_000) });
+      const oldestUnread = await addMessage({ createdAt: new Date(now.getTime() - 60_000) });
+      const before = await snapshot();
+      const expectedDueAt = new Date(oldestUnread.createdAt.getTime() + 5 * 60 * 1000);
+
+      await expect(service.prepareReminder(reminder.id, now)).resolves.toBeNull();
+
+      expect(await snapshot()).toEqual({
+        ...before,
+        reminders: before.reminders.map((row) =>
+          row.id === reminder.id ? { ...row, dueAt: expectedDueAt } : row,
+        ),
+      });
+      await expect(service.findDueReminders(now)).resolves.not.toContainEqual(
+        expect.objectContaining({ id: reminder.id }),
+      );
+    });
+
+    it.each([
+      { age: 5 * 60 * 1000 - 1, ready: false, label: 'one millisecond before five minutes' },
+      { age: 5 * 60 * 1000, ready: true, label: 'exactly five minutes' },
+      { age: 5 * 60 * 1000 + 1, ready: true, label: 'one millisecond after five minutes' },
+    ])('should enforce the minimum unread age at $label', async ({ age, ready }) => {
+      const message = await addMessage({ createdAt: new Date(now.getTime() - age) });
+      const before = await snapshot();
+
+      const result = await service.prepareReminder(reminder.id, now);
+
+      expect(result).toEqual(ready ? reminder : null);
+      expect(await snapshot()).toEqual({
+        ...before,
+        reminders: ready
+          ? before.reminders
+          : [
+              {
+                ...reminder,
+                dueAt: new Date(message.createdAt.getTime() + 5 * 60 * 1000),
+              },
+            ],
+      });
+    });
+
+    it('should keep an eligible reminder pending without postponing for newer replies or reserving it on repeated preparation', async () => {
+      await addMessage({ createdAt: new Date(now.getTime() - 6 * 60_000) });
+      await addMessage({ createdAt: new Date(now.getTime() - 60_000) });
+      const before = await snapshot();
+
+      await expect(service.prepareReminder(reminder.id, now)).resolves.toEqual(reminder);
+      await expect(service.prepareReminder(reminder.id, now)).resolves.toEqual(reminder);
+
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it.each(['cancellation', 'postponement'] as const)(
+      'should roll back %s if commit fails, propagate the error and allow a retry',
+      async (operation) => {
+        if (operation === 'postponement') await addMessage();
+        const before = await snapshot();
+        const source = reminders.manager.connection;
+        const runner = source.createQueryRunner();
+        const error = new Error('Simulated reminder preparation commit failure');
+        const createRunner = vi.spyOn(source, 'createQueryRunner').mockReturnValue(runner);
+        const commit = vi.spyOn(runner, 'commitTransaction').mockImplementationOnce(async () => {
+          const inside = await reminders.findOneByOrFail({ id: reminder.id });
+          expect(inside).toEqual(
+            operation === 'cancellation'
+              ? { ...reminder, status: ReminderStatus.CANCELLED }
+              : { ...reminder, dueAt: new Date(now.getTime() + 4 * 60_000) },
+          );
+          throw error;
+        });
+        try {
+          await expect(service.prepareReminder(reminder.id, now)).rejects.toBe(error);
+          expect(commit).toHaveBeenCalledOnce();
+        } finally {
+          commit.mockRestore();
+          createRunner.mockRestore();
+        }
+        expect(await snapshot()).toEqual(before);
+
+        await expect(service.prepareReminder(reminder.id, now)).resolves.toBeNull();
+        expect(await reminders.findOneByOrFail({ id: reminder.id })).toEqual(
+          operation === 'cancellation'
+            ? { ...reminder, status: ReminderStatus.CANCELLED }
+            : { ...reminder, dueAt: new Date(now.getTime() + 4 * 60_000) },
+        );
+      },
+    );
+
+    it('should use the current time when preparing without an explicit date', async () => {
+      await addMessage({ createdAt: new Date(now.getTime() - 5 * 60_000) });
+      const before = await snapshot();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(now);
+      try {
+        await expect(service.prepareReminder(reminder.id)).resolves.toEqual(reminder);
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(await snapshot()).toEqual(before);
+    });
+  });
 });

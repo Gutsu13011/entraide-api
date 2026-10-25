@@ -401,6 +401,18 @@ by due date and then id ascending. Without an argument it uses the current time.
 Selection is read-only and returns candidates for later processing: it does not
 mark messages as read, change reminder statuses or send emails.
 
+`prepareReminder(id, now)` rechecks that the reminder is still pending and due
+inside a transaction. It cancels the reminder when no received reply remains
+unread, excluding own replies, already-read replies and other conversations.
+If the oldest received unread reply is less than five minutes old, it postpones
+the due date to that reply's creation time plus five minutes. Otherwise it returns
+the unchanged pending reminder. Missing, terminal or future reminders return
+`null`, as do cancelled or postponed candidates. All database operations use the
+transaction manager; a failure rolls back changes and propagates to the caller.
+Preparation does not mark messages as read or reserve a reminder: repeated calls
+can return the same eligible reminder. Scheduling and email delivery are not yet
+connected.
+
 The initial service request text and previously stored replies are not
 backfilled. Reading all received replies cancels the corresponding pending
 reminder transactionally. A subsequent reply starts a new five-minute delay

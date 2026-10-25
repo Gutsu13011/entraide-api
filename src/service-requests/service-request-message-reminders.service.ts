@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ServiceRequestMessageReminder } from './service-request-message-reminder.entity.js';
-import { LessThanOrEqual, Repository } from 'typeorm';
+import { IsNull, LessThanOrEqual, Not, Repository } from 'typeorm';
 import { ServiceRequestMessageReminderStatus } from './service-request-message-reminder-status.enum.js';
+import { ServiceRequestMessage } from './service-request-message.entity.js';
 
 @Injectable()
 export class ServiceRequestMessageRemindersService {
@@ -18,6 +19,61 @@ export class ServiceRequestMessageRemindersService {
       },
       order: { dueAt: 'ASC', id: 'ASC' },
       take: 50,
+    });
+  }
+
+  async prepareReminder(
+    reminderId: number,
+    now: Date = new Date(),
+  ): Promise<ServiceRequestMessageReminder | null> {
+    return this.serviceRequestMessageReminder.manager.transaction(async (manager) => {
+      const remindersRepository = manager.getRepository(ServiceRequestMessageReminder);
+      const reminder = await remindersRepository.findOneBy({
+        id: reminderId,
+        status: ServiceRequestMessageReminderStatus.PENDING,
+        dueAt: LessThanOrEqual(now),
+      });
+
+      if (reminder === null) {
+        return null;
+      }
+
+      const oldestUnreadMessage = await manager.getRepository(ServiceRequestMessage).findOne({
+        where: {
+          serviceRequestId: reminder.serviceRequestId,
+          authorUserId: Not(reminder.recipientUserId),
+          readAt: IsNull(),
+        },
+        order: { createdAt: 'ASC', id: 'ASC' },
+      });
+
+      if (oldestUnreadMessage === null) {
+        await remindersRepository.update(
+          {
+            id: reminderId,
+            status: ServiceRequestMessageReminderStatus.PENDING,
+          },
+          { status: ServiceRequestMessageReminderStatus.CANCELLED },
+        );
+
+        return null;
+      }
+
+      const eligibleAt = new Date(oldestUnreadMessage.createdAt.getTime() + 5 * 60 * 1000);
+
+      if (eligibleAt.getTime() > now.getTime()) {
+        await remindersRepository.update(
+          {
+            id: reminderId,
+            status: ServiceRequestMessageReminderStatus.PENDING,
+          },
+          { dueAt: eligibleAt },
+        );
+
+        return null;
+      }
+
+      return reminder;
     });
   }
 }
