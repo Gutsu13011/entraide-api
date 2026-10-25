@@ -884,6 +884,13 @@ describe('ServiceRequestsService', () => {
     let conversation: ServiceRequest;
     let boundary: ServiceRequestMessage;
     const dto = { upToMessageId: 102 };
+    const transactionMessageRepositoryMock = {
+      findOneBy: vi.fn(),
+      update: vi.fn(),
+      existsBy: vi.fn(),
+    };
+    const reminderRepositoryMock = { update: vi.fn() };
+    const transactionManagerMock = { getRepository: vi.fn() };
 
     beforeEach(() => {
       conversation = Object.assign(new ServiceRequest(), {
@@ -899,8 +906,23 @@ describe('ServiceRequestsService', () => {
         readAt: null,
       });
       requestRepositoryMock.findOneBy.mockResolvedValue(conversation);
-      messageRepositoryMock.findOneBy.mockResolvedValue(boundary);
-      messageRepositoryMock.update.mockResolvedValue({ affected: 1 });
+      transactionMessageRepositoryMock.findOneBy.mockResolvedValue(boundary);
+      transactionMessageRepositoryMock.update.mockResolvedValue({ affected: 1 });
+      transactionMessageRepositoryMock.existsBy.mockResolvedValue(false);
+      reminderRepositoryMock.update.mockResolvedValue({ affected: 1 });
+      transactionManagerMock.getRepository.mockImplementation((entity) => {
+        if (entity === ServiceRequestMessage) return transactionMessageRepositoryMock;
+        if (entity === ServiceRequestMessageReminder) return reminderRepositoryMock;
+        throw new Error('Unexpected transactional repository');
+      });
+      messageRepositoryMock.manager.transaction.mockImplementation(async (work) =>
+        work(transactionManagerMock),
+      );
+    });
+
+    afterEach(() => {
+      expect(messageRepositoryMock.findOneBy).not.toHaveBeenCalled();
+      expect(messageRepositoryMock.update).not.toHaveBeenCalled();
     });
 
     it.each([8, 7])(
@@ -911,11 +933,11 @@ describe('ServiceRequestsService', () => {
         await expect(service.markMessagesAsRead(42, dto, userId)).resolves.toBeUndefined();
 
         expect(requestRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({ id: 42 });
-        expect(messageRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({
+        expect(transactionMessageRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({
           id: 102,
           serviceRequestId: 42,
         });
-        expect(messageRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
+        expect(transactionMessageRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
           {
             serviceRequestId: 42,
             authorUserId: Not(userId),
@@ -924,9 +946,18 @@ describe('ServiceRequestsService', () => {
           },
           { readAt: expect.any(Date) },
         );
-        const appliedDate = messageRepositoryMock.update.mock.calls[0][1].readAt as Date;
+        const appliedDate = transactionMessageRepositoryMock.update.mock.calls[0][1].readAt as Date;
         expect(appliedDate.getTime()).toBeGreaterThanOrEqual(startedAt);
         expect(appliedDate.getTime()).toBeLessThanOrEqual(Date.now());
+        expect(transactionMessageRepositoryMock.existsBy).toHaveBeenCalledExactlyOnceWith({
+          serviceRequestId: 42,
+          authorUserId: Not(userId),
+          readAt: IsNull(),
+        });
+        expect(reminderRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
+          { serviceRequestId: 42, recipientUserId: userId, status: ReminderStatus.PENDING },
+          { status: ReminderStatus.CANCELLED },
+        );
         expect(boundary.readAt).toBeNull();
         expect(conversation.status).toBe(ServiceRequestStatus.ACCEPTED);
         expect(requestRepositoryMock.update).not.toHaveBeenCalled();
@@ -939,9 +970,10 @@ describe('ServiceRequestsService', () => {
       await expect(service.markMessagesAsRead(42, dto, 99)).rejects.toThrow(
         new ForbiddenException('Only request participants can access this conversation'),
       );
+      expect(messageRepositoryMock.manager.transaction).not.toHaveBeenCalled();
 
-      expect(messageRepositoryMock.findOneBy).not.toHaveBeenCalled();
-      expect(messageRepositoryMock.update).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.findOneBy).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
     });
 
     it('should refuse a missing request before looking up the boundary or updating messages', async () => {
@@ -950,31 +982,32 @@ describe('ServiceRequestsService', () => {
       await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toThrow(
         new NotFoundException('Service request not found'),
       );
+      expect(messageRepositoryMock.manager.transaction).not.toHaveBeenCalled();
 
-      expect(messageRepositoryMock.findOneBy).not.toHaveBeenCalled();
-      expect(messageRepositoryMock.update).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.findOneBy).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
     });
 
     it('should reject a missing boundary or one from another conversation using a scoped lookup', async () => {
-      messageRepositoryMock.findOneBy.mockResolvedValue(null);
+      transactionMessageRepositoryMock.findOneBy.mockResolvedValue(null);
 
       await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toThrow(
         new NotFoundException('Message not found in this conversation'),
       );
 
-      expect(messageRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({
+      expect(transactionMessageRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({
         id: 102,
         serviceRequestId: 42,
       });
-      expect(messageRepositoryMock.update).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
     });
 
     it('should succeed when no unread received message matches the update conditions', async () => {
-      messageRepositoryMock.update.mockResolvedValue({ affected: 0 });
+      transactionMessageRepositoryMock.update.mockResolvedValue({ affected: 0 });
 
       await expect(service.markMessagesAsRead(42, dto, 8)).resolves.toBeUndefined();
 
-      expect(messageRepositoryMock.update).toHaveBeenCalledOnce();
+      expect(transactionMessageRepositoryMock.update).toHaveBeenCalledOnce();
     });
 
     it('should propagate a participation lookup failure without querying or updating messages', async () => {
@@ -983,22 +1016,23 @@ describe('ServiceRequestsService', () => {
 
       await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
 
-      expect(messageRepositoryMock.findOneBy).not.toHaveBeenCalled();
-      expect(messageRepositoryMock.update).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.findOneBy).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
+      expect(messageRepositoryMock.manager.transaction).not.toHaveBeenCalled();
     });
 
     it('should propagate a boundary lookup failure without updating messages', async () => {
       const error = new Error('Message lookup unavailable');
-      messageRepositoryMock.findOneBy.mockRejectedValue(error);
+      transactionMessageRepositoryMock.findOneBy.mockRejectedValue(error);
 
       await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
 
-      expect(messageRepositoryMock.update).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
     });
 
     it('should propagate an update failure instead of reporting success', async () => {
       const error = new Error('Message update unavailable');
-      messageRepositoryMock.update.mockRejectedValue(error);
+      transactionMessageRepositoryMock.update.mockRejectedValue(error);
 
       await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
     });
@@ -1011,19 +1045,19 @@ describe('ServiceRequestsService', () => {
         }),
       );
       const response = service.markMessagesAsRead(42, dto, 8);
-      expect(messageRepositoryMock.findOneBy).not.toHaveBeenCalled();
-      expect(messageRepositoryMock.update).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.findOneBy).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
 
       finishLookup(conversation);
       await response;
 
-      expect(messageRepositoryMock.findOneBy).toHaveBeenCalledOnce();
-      expect(messageRepositoryMock.update).toHaveBeenCalledOnce();
+      expect(transactionMessageRepositoryMock.findOneBy).toHaveBeenCalledOnce();
+      expect(transactionMessageRepositoryMock.update).toHaveBeenCalledOnce();
     });
 
     it('should wait for the boundary lookup before updating messages', async () => {
       let finishLookup!: (message: ServiceRequestMessage) => void;
-      messageRepositoryMock.findOneBy.mockReturnValue(
+      transactionMessageRepositoryMock.findOneBy.mockReturnValue(
         new Promise<ServiceRequestMessage>((resolve) => {
           finishLookup = resolve;
         }),
@@ -1031,18 +1065,18 @@ describe('ServiceRequestsService', () => {
       const response = service.markMessagesAsRead(42, dto, 8);
       await Promise.resolve();
       await Promise.resolve();
-      expect(messageRepositoryMock.findOneBy).toHaveBeenCalledOnce();
-      expect(messageRepositoryMock.update).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.findOneBy).toHaveBeenCalledOnce();
+      expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
 
       finishLookup(boundary);
       await response;
 
-      expect(messageRepositoryMock.update).toHaveBeenCalledOnce();
+      expect(transactionMessageRepositoryMock.update).toHaveBeenCalledOnce();
     });
 
     it('should resolve only after the conditional database update has completed', async () => {
       let finishUpdate!: (result: { affected: number }) => void;
-      messageRepositoryMock.update.mockReturnValue(
+      transactionMessageRepositoryMock.update.mockReturnValue(
         new Promise<{ affected: number }>((resolve) => {
           finishUpdate = resolve;
         }),
@@ -1051,13 +1085,130 @@ describe('ServiceRequestsService', () => {
       const response = service.markMessagesAsRead(42, dto, 8);
       void response.then(settled);
       for (let step = 0; step < 4; step++) await Promise.resolve();
-      expect(messageRepositoryMock.update).toHaveBeenCalledOnce();
+      expect(transactionMessageRepositoryMock.update).toHaveBeenCalledOnce();
       expect(settled).not.toHaveBeenCalled();
 
       finishUpdate({ affected: 1 });
       await expect(response).resolves.toBeUndefined();
 
       expect(settled).toHaveBeenCalledOnce();
+    });
+
+    it('should preserve the pending reminder when any received message remains unread', async () => {
+      transactionMessageRepositoryMock.existsBy.mockResolvedValue(true);
+
+      await service.markMessagesAsRead(42, dto, 8);
+
+      expect(transactionMessageRepositoryMock.update).toHaveBeenCalledOnce();
+      expect(transactionMessageRepositoryMock.existsBy).toHaveBeenCalledExactlyOnceWith({
+        serviceRequestId: 42,
+        authorUserId: Not(8),
+        readAt: IsNull(),
+      });
+      expect(reminderRepositoryMock.update).not.toHaveBeenCalled();
+    });
+
+    it('should cancel a stale pending reminder even when this read update affects no messages', async () => {
+      transactionMessageRepositoryMock.update.mockResolvedValue({ affected: 0 });
+      reminderRepositoryMock.update.mockResolvedValue({ affected: 0 });
+
+      await expect(service.markMessagesAsRead(42, dto, 8)).resolves.toBeUndefined();
+
+      expect(reminderRepositoryMock.update).toHaveBeenCalledExactlyOnceWith(
+        { serviceRequestId: 42, recipientUserId: 8, status: ReminderStatus.PENDING },
+        { status: ReminderStatus.CANCELLED },
+      );
+    });
+
+    it('should check for remaining unread messages only after the read update completes', async () => {
+      let finishUpdate!: (result: { affected: number }) => void;
+      transactionMessageRepositoryMock.update.mockReturnValue(
+        new Promise((resolve) => {
+          finishUpdate = resolve;
+        }),
+      );
+      const response = service.markMessagesAsRead(42, dto, 8);
+      await vi.waitFor(() =>
+        expect(transactionMessageRepositoryMock.update).toHaveBeenCalledOnce(),
+      );
+      expect(transactionMessageRepositoryMock.existsBy).not.toHaveBeenCalled();
+      expect(reminderRepositoryMock.update).not.toHaveBeenCalled();
+
+      finishUpdate({ affected: 1 });
+      await response;
+      expect(transactionMessageRepositoryMock.existsBy).toHaveBeenCalledOnce();
+    });
+
+    it('should wait for the unread check before cancelling a reminder', async () => {
+      let finishCheck!: (unread: boolean) => void;
+      transactionMessageRepositoryMock.existsBy.mockReturnValue(
+        new Promise((resolve) => {
+          finishCheck = resolve;
+        }),
+      );
+      const response = service.markMessagesAsRead(42, dto, 8);
+      await vi.waitFor(() =>
+        expect(transactionMessageRepositoryMock.existsBy).toHaveBeenCalledOnce(),
+      );
+      expect(reminderRepositoryMock.update).not.toHaveBeenCalled();
+
+      finishCheck(false);
+      await response;
+      expect(reminderRepositoryMock.update).toHaveBeenCalledOnce();
+    });
+
+    it('should propagate an unread check failure without cancelling reminders', async () => {
+      const error = new Error('Unread lookup unavailable');
+      transactionMessageRepositoryMock.existsBy.mockRejectedValue(error);
+
+      await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
+
+      expect(reminderRepositoryMock.update).not.toHaveBeenCalled();
+    });
+
+    it('should propagate reminder cancellation failure instead of reporting a successful read', async () => {
+      const error = new Error('Reminder cancellation unavailable');
+      reminderRepositoryMock.update.mockRejectedValue(error);
+
+      await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
+    });
+
+    it('should not resolve before reminder cancellation and transaction commit complete', async () => {
+      let finishCancellation!: (result: { affected: number }) => void;
+      let finishCommit!: () => void;
+      reminderRepositoryMock.update.mockReturnValue(
+        new Promise((resolve) => {
+          finishCancellation = resolve;
+        }),
+      );
+      messageRepositoryMock.manager.transaction.mockImplementation(async (work) => {
+        await work(transactionManagerMock);
+        await new Promise<void>((resolve) => {
+          finishCommit = resolve;
+        });
+      });
+      const settled = vi.fn();
+      const response = service.markMessagesAsRead(42, dto, 8);
+      void response.then(settled);
+      await vi.waitFor(() => expect(reminderRepositoryMock.update).toHaveBeenCalledOnce());
+      expect(settled).not.toHaveBeenCalled();
+
+      finishCancellation({ affected: 1 });
+      await vi.waitFor(() => expect(finishCommit).toBeTypeOf('function'));
+      expect(settled).not.toHaveBeenCalled();
+      finishCommit();
+      await response;
+      expect(settled).toHaveBeenCalledOnce();
+    });
+
+    it('should propagate a transaction commit failure', async () => {
+      const error = new Error('Read transaction commit failed');
+      messageRepositoryMock.manager.transaction.mockImplementation(async (work) => {
+        await work(transactionManagerMock);
+        throw error;
+      });
+
+      await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
     });
   });
 

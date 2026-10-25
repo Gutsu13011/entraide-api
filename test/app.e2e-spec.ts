@@ -2954,16 +2954,62 @@ describe('AppController (e2e)', () => {
               readAt: null,
             },
           ]);
+          await remindersRepository.save([
+            {
+              serviceRequestId: original.id,
+              recipientUserId: readerId,
+              status: ReminderStatus.PENDING,
+              dueAt: new Date('2026-10-22T08:05:00.000Z'),
+              sentAt: null,
+            },
+            {
+              serviceRequestId: original.id,
+              recipientUserId: senderId,
+              status: ReminderStatus.PENDING,
+              dueAt: new Date('2026-10-22T08:06:00.000Z'),
+              sentAt: null,
+            },
+            {
+              serviceRequestId: other.body.id,
+              recipientUserId: readerId,
+              status: ReminderStatus.PENDING,
+              dueAt: new Date('2026-10-22T08:07:00.000Z'),
+              sentAt: null,
+            },
+            {
+              serviceRequestId: original.id,
+              recipientUserId: readerId,
+              status: ReminderStatus.SENT,
+              dueAt: new Date('2026-10-21T08:05:00.000Z'),
+              sentAt: new Date('2026-10-21T08:06:00.000Z'),
+            },
+            {
+              serviceRequestId: original.id,
+              recipientUserId: readerId,
+              status: ReminderStatus.CANCELLED,
+              dueAt: new Date('2026-10-20T08:05:00.000Z'),
+              sentAt: null,
+            },
+          ]);
           return {
             token,
             readerId,
             otherId: other.body.id,
+            reminderSnapshot: await remindersRepository.find({ order: { id: 'ASC' } }),
             snapshot: await messagesRepository.find({ order: { id: 'ASC' } }),
           };
         }
 
-        async function expectUnchanged(snapshot: ServiceRequestMessage[]) {
+        async function expectUnchanged(
+          snapshot: ServiceRequestMessage[],
+          reminderSnapshot?: ServiceRequestMessageReminder[],
+        ) {
           expect(await messagesRepository.find({ order: { id: 'ASC' } })).toEqual(snapshot);
+          if (reminderSnapshot) {
+            expect(await remindersRepository.find({ order: { id: 'ASC' } })).toEqual(
+              reminderSnapshot,
+            );
+          }
           expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
         }
 
@@ -3001,6 +3047,9 @@ describe('AppController (e2e)', () => {
 
             await markRead({ upToMessageId: 105 }, history.token).expect(204);
             expect(await messagesRepository.find({ order: { id: 'ASC' } })).toEqual(after);
+            expect(await remindersRepository.find({ order: { id: 'ASC' } })).toEqual(
+              history.reminderSnapshot,
+            );
           },
         );
 
@@ -3012,6 +3061,9 @@ describe('AppController (e2e)', () => {
           const after = await messagesRepository.find({ order: { id: 'ASC' } });
           expect(after[0]).toEqual({ ...history.snapshot[0], readAt: expect.any(Date) });
           expect(after.slice(1)).toEqual(history.snapshot.slice(1));
+          expect(await remindersRepository.find({ order: { id: 'ASC' } })).toEqual(
+            history.reminderSnapshot,
+          );
         });
 
         it(`${readRoute} (PATCH) should return 204 when the valid boundary has no unread received messages to update`, async () => {
@@ -3034,7 +3086,9 @@ describe('AppController (e2e)', () => {
             201,
           );
 
+          const pending = await remindersRepository.find();
           await markRead({ upToMessageId: boundary }).expect(204);
+          expect(await remindersRepository.find()).toEqual(pending);
 
           expect(
             (await messagesRepository.findOneByOrFail({ id: first.body.id })).readAt,
@@ -3044,13 +3098,138 @@ describe('AppController (e2e)', () => {
           ).toBeNull();
         });
 
+        it.each(['requester', 'recipient'] as const)(
+          `${readRoute} (PATCH) should cancel only the %s pending reminder after all received replies are read and preserve history on repeat`,
+          async (reader) => {
+            const history = await seedReadHistory(reader);
+            await markRead({ upToMessageId: 107 }, history.token).expect(204);
+
+            const expectedReminders = history.reminderSnapshot.map((reminder) =>
+              reminder.serviceRequestId === original.id &&
+              reminder.recipientUserId === history.readerId &&
+              reminder.status === ReminderStatus.PENDING
+                ? { ...reminder, status: ReminderStatus.CANCELLED }
+                : reminder,
+            );
+            expect(await remindersRepository.find({ order: { id: 'ASC' } })).toEqual(
+              expectedReminders,
+            );
+            const after = await messagesRepository.find({ order: { id: 'ASC' } });
+            for (let index = 0; index < after.length; index++) {
+              const previous = history.snapshot[index];
+              expect(after[index]).toEqual(
+                [101, 105, 106].includes(previous.id)
+                  ? { ...previous, readAt: expect.any(Date) }
+                  : previous,
+              );
+            }
+            // Own unread replies remain, but they must not keep the reader's reminder alive.
+            expect(after.find((message) => message.id === 107)!.readAt).toBeNull();
+            expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+
+            await markRead({ upToMessageId: 107 }, history.token).expect(204);
+            expect(await messagesRepository.find({ order: { id: 'ASC' } })).toEqual(after);
+            expect(await remindersRepository.find({ order: { id: 'ASC' } })).toEqual(
+              expectedReminders,
+            );
+          },
+        );
+
+        it(`${readRoute} (PATCH) should allow a later reply to start a fresh five-minute reminder after cancellation`, async () => {
+          const first = await postMessage({ content: 'Premier message à lire' }, ownerToken).expect(
+            201,
+          );
+          const previous = await remindersRepository.findOneByOrFail({
+            serviceRequestId: original.id,
+            recipientUserId: requesterId,
+          });
+          await remindersRepository.update(previous.id, {
+            dueAt: new Date('2026-10-20T08:00:00.000Z'),
+          });
+          const oldReminder = await remindersRepository.findOneByOrFail({ id: previous.id });
+
+          await markRead({ upToMessageId: first.body.id }).expect(204);
+          const next = await postMessage(
+            { content: 'Nouveau message après lecture' },
+            ownerToken,
+          ).expect(201);
+          const reminders = await remindersRepository.find({ order: { id: 'ASC' } });
+
+          expect(reminders).toHaveLength(2);
+          expect(reminders[0]).toEqual({ ...oldReminder, status: ReminderStatus.CANCELLED });
+          expect(reminders[1]).toMatchObject({
+            serviceRequestId: original.id,
+            recipientUserId: requesterId,
+            status: ReminderStatus.PENDING,
+            sentAt: null,
+            dueAt: new Date(new Date(next.body.createdAt).getTime() + 5 * 60 * 1000),
+          });
+          expect(reminders[1].id).not.toBe(oldReminder.id);
+          expect(
+            (await messagesRepository.findOneByOrFail({ id: next.body.id })).readAt,
+          ).toBeNull();
+        });
+
+        it(`${readRoute} (PATCH) should roll back read dates when reminder cancellation fails and allow a retry`, async () => {
+          const history = await seedReadHistory();
+          await remindersRepository.query(
+            `CREATE TRIGGER fail_test_reminder_cancel BEFORE UPDATE ON service_request_message_reminders WHEN NEW.status = 'CANCELLED' BEGIN SELECT RAISE(ABORT, 'Simulated cancellation failure'); END`,
+          );
+          app.useLogger(false);
+          try {
+            await markRead({ upToMessageId: 107 }).expect(500);
+          } finally {
+            await remindersRepository.query('DROP TRIGGER fail_test_reminder_cancel');
+          }
+          await expectUnchanged(history.snapshot, history.reminderSnapshot);
+
+          await markRead({ upToMessageId: 107 }).expect(204);
+          expect((await messagesRepository.findOneByOrFail({ id: 106 })).readAt).toBeInstanceOf(
+            Date,
+          );
+          expect(
+            await remindersRepository.findOneByOrFail({
+              id: history.reminderSnapshot[0].id,
+            }),
+          ).toEqual({ ...history.reminderSnapshot[0], status: ReminderStatus.CANCELLED });
+        });
+
+        it(`${readRoute} (PATCH) should preserve reminders and read dates when the message update fails`, async () => {
+          const history = await seedReadHistory();
+          await messagesRepository.query(
+            `CREATE TRIGGER fail_test_read_update BEFORE UPDATE OF readAt ON service_request_messages BEGIN SELECT RAISE(ABORT, 'Simulated read update failure'); END`,
+          );
+          app.useLogger(false);
+          try {
+            await markRead({ upToMessageId: 107 }).expect(500);
+          } finally {
+            await messagesRepository.query('DROP TRIGGER fail_test_read_update');
+          }
+          await expectUnchanged(history.snapshot, history.reminderSnapshot);
+        });
+
+        it(`${readRoute} (PATCH) should read legacy replies successfully when no reminder exists`, async () => {
+          const message = await messagesRepository.save({
+            serviceRequestId: original.id,
+            authorUserId: ownerId,
+            content: 'Message antérieur aux rappels',
+            readAt: null,
+          });
+          await markRead({ upToMessageId: message.id }).expect(204);
+
+          expect(
+            (await messagesRepository.findOneByOrFail({ id: message.id })).readAt,
+          ).toBeInstanceOf(Date);
+          expect(await remindersRepository.count()).toBe(0);
+        });
+
         it(`${readRoute} (PATCH) should refuse a boundary belonging to another conversation`, async () => {
           const history = await seedReadHistory();
 
           const response = await markRead({ upToMessageId: 104 }).expect(404);
 
           expect(response.body.message).toBe('Message not found in this conversation');
-          await expectUnchanged(history.snapshot);
+          await expectUnchanged(history.snapshot, history.reminderSnapshot);
         });
 
         it(`${readRoute} (PATCH) should refuse a nonexistent message boundary`, async () => {
@@ -3058,7 +3237,7 @@ describe('AppController (e2e)', () => {
 
           await markRead({ upToMessageId: 999999 }).expect(404);
 
-          await expectUnchanged(history.snapshot);
+          await expectUnchanged(history.snapshot, history.reminderSnapshot);
         });
 
         it(`${readRoute} (PATCH) should forbid an unrelated account from marking the conversation as read`, async () => {
@@ -3067,7 +3246,7 @@ describe('AppController (e2e)', () => {
 
           await markRead({ upToMessageId: 105 }, token).expect(403);
 
-          await expectUnchanged(history.snapshot);
+          await expectUnchanged(history.snapshot, history.reminderSnapshot);
         });
 
         it.each([
@@ -3087,7 +3266,7 @@ describe('AppController (e2e)', () => {
 
             await markRead(body).expect(400);
 
-            await expectUnchanged(history.snapshot);
+            await expectUnchanged(history.snapshot, history.reminderSnapshot);
           },
         );
 
@@ -3103,7 +3282,7 @@ describe('AppController (e2e)', () => {
             const response = await markRead({ upToMessageId: 105, [field]: value }).expect(400);
 
             expect(response.body.message).toContain(`property ${field} should not exist`);
-            await expectUnchanged(history.snapshot);
+            await expectUnchanged(history.snapshot, history.reminderSnapshot);
           },
         );
 
@@ -3124,7 +3303,7 @@ describe('AppController (e2e)', () => {
 
             await pending.expect(401);
 
-            await expectUnchanged(history.snapshot);
+            await expectUnchanged(history.snapshot, history.reminderSnapshot);
           },
         );
 
@@ -3139,7 +3318,7 @@ describe('AppController (e2e)', () => {
 
             await markRead({ upToMessageId: 105 }, requesterToken, id).expect(expected);
 
-            await expectUnchanged(history.snapshot);
+            await expectUnchanged(history.snapshot, history.reminderSnapshot);
           },
         );
 
@@ -3178,7 +3357,7 @@ describe('AppController (e2e)', () => {
             .send({ upToMessageId: 105 })
             .expect(404);
 
-          await expectUnchanged(history.snapshot);
+          await expectUnchanged(history.snapshot, history.reminderSnapshot);
         });
 
         it(`${readRoute} (PATCH) should document an authenticated 204 response without content and the positive integer boundary`, () => {
@@ -3726,8 +3905,11 @@ describe('AppController (e2e)', () => {
           hourlyRate: 35,
           available: true,
           imageUrl: '',
-        })
-        .expect(201);
+        });
+      expect(
+        provider.status,
+        `Status fixture provider creation failed: ${JSON.stringify(provider.body)}`,
+      ).toBe(201);
       providerId = provider.body.id;
       const offering = await request(app.getHttpServer())
         .post(`/service-providers/${providerId}/service-offerings`)

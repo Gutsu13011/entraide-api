@@ -328,6 +328,14 @@ existing read dates remain unchanged. Repeating the operation, including when
 no message needs updating, succeeds without replacing prior read dates. This
 operation does not change the request's status. There is no mutating GET route.
 
+Boundary validation, the read update, the remaining-unread check and conditional
+reminder cancellation use one transaction and its entity manager. If no received
+reply remains unread anywhere in the conversation, the API cancels only the
+reader's pending reminder for that request. A newer unread reply beyond the
+boundary keeps the reminder pending. Own unread messages do not prevent
+cancellation. Other recipients, other requests and sent or cancelled history
+remain unchanged. Any failure rolls back both read dates and reminder changes.
+
 ### Unread message counts
 
 `GET /service-requests/messages/unread-counts` requires a valid bearer token
@@ -388,10 +396,12 @@ for different requests remain independent. Sent and cancelled records do not
 prevent scheduling a new pending reminder.
 
 The initial service request text and previously stored replies are not
-backfilled. Read updates do not yet cancel pending reminders; scheduled
-processing, cancellation and email transport will be connected in later
-steps. No emails are sent at this stage. Apply the reminder-table migration
-before using message submission against an existing local database.
+backfilled. Reading all received replies cancels the corresponding pending
+reminder transactionally. A subsequent reply starts a new five-minute delay
+with a new pending reminder, preserving the cancelled record. Scheduled
+processing and email transport will be connected in later steps. No emails
+are sent at this stage. Apply the reminder-table migration before using
+message submission against an existing local database.
 
 ## Reviews
 

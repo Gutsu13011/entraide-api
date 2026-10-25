@@ -206,24 +206,47 @@ export class ServiceRequestsService {
     userId: number,
   ): Promise<void> {
     const serviceRequest = await this.findRequestForParticipant(serviceRequestId, userId);
-    const message = await this.serviceRequestMessageRepository.findOneBy({
-      id: markServiceRequestMessagesReadDto.upToMessageId,
-      serviceRequestId: serviceRequest.id,
-    });
 
-    if (message === null) {
-      throw new NotFoundException('Message not found in this conversation');
-    }
+    await this.serviceRequestMessageRepository.manager.transaction(async (manager) => {
+      const messageRepository = manager.getRepository(ServiceRequestMessage);
+      const message = await messageRepository.findOneBy({
+        id: markServiceRequestMessagesReadDto.upToMessageId,
+        serviceRequestId: serviceRequest.id,
+      });
 
-    await this.serviceRequestMessageRepository.update(
-      {
+      if (message === null) {
+        throw new NotFoundException('Message not found in this conversation');
+      }
+
+      await messageRepository.update(
+        {
+          serviceRequestId: serviceRequest.id,
+          authorUserId: Not(userId),
+          readAt: IsNull(),
+          id: LessThanOrEqual(markServiceRequestMessagesReadDto.upToMessageId),
+        },
+        { readAt: new Date() },
+      );
+
+      const hasUnreadMessages = await messageRepository.existsBy({
         serviceRequestId: serviceRequest.id,
         authorUserId: Not(userId),
         readAt: IsNull(),
-        id: LessThanOrEqual(markServiceRequestMessagesReadDto.upToMessageId),
-      },
-      { readAt: new Date() },
-    );
+      });
+
+      if (hasUnreadMessages) {
+        return;
+      }
+
+      await manager.getRepository(ServiceRequestMessageReminder).update(
+        {
+          serviceRequestId: serviceRequest.id,
+          recipientUserId: userId,
+          status: ServiceRequestMessageReminderStatus.PENDING,
+        },
+        { status: ServiceRequestMessageReminderStatus.CANCELLED },
+      );
+    });
   }
 
   async getUnreadMessageCounts(userId: number): Promise<ServiceRequestUnreadMessageCountsDto> {
