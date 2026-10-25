@@ -24,6 +24,7 @@ import { CreateServiceRequestsTable1791550235362 } from './database/migrations/1
 import { AddServiceRequestProvider1792423748325 } from './database/migrations/1792423748325-AddServiceRequestProvider.js';
 import { LinkReviewsToServiceRequests1792425147989 } from './database/migrations/1792425147989-LinkReviewsToServiceRequests.js';
 import { CreateServiceRequestMessagesTable1792655516545 } from './database/migrations/1792655516545-CreateServiceRequestMessagesTable.js';
+import { CreateServiceRequestMessageRemindersTable1792945282224 } from './database/migrations/1792945282224-CreateServiceRequestMessageRemindersTable.js';
 
 const testMigrations = [
   InitialSchema1789026143459,
@@ -36,6 +37,7 @@ const testMigrations = [
   AddServiceRequestProvider1792423748325,
   LinkReviewsToServiceRequests1792425147989,
   CreateServiceRequestMessagesTable1792655516545,
+  CreateServiceRequestMessageRemindersTable1792945282224,
 ];
 @Module({
   imports: [

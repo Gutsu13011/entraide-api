@@ -351,8 +351,30 @@ relevant count; subsequent replies beyond the read boundary remain unread.
 The current implementation performs two SQL count queries and returns a single
 HTTP response. It does not load message bodies or persist separate counters.
 Swagger documents the response and its three non-negative numeric fields.
-Frontend unread-message counters, in-app notifications, real-time delivery and
-delayed email reminders for unread messages are planned later.
+The Angular frontend displays shared unread-message counters, polls them while
+visible and refreshes them after reading. In-app notifications, real-time push
+and delayed email delivery are separate features.
+
+### Unread-message reminder storage
+
+The `CreateServiceRequestMessageRemindersTable` migration adds
+`service_request_message_reminders`. Each reminder records a service request,
+a recipient account, a due date, its creation date, an optional sent date and
+a status (`PENDING`, `SENT` or `CANCELLED`, defaulting to `PENDING`).
+
+A partial unique index allows at most one pending reminder for each request
+and recipient pair, while preserving multiple sent or cancelled reminders.
+Another index covers status and due date for future scheduled processing.
+Deleting a request or its reminder recipient cascades to the related reminders;
+deleting only an offering or provider retains reminders linked to surviving
+requests. The migration creates only the new table and its indexes. Reverting
+it removes reminder records and leaves the existing tables unchanged.
+
+This stage provides storage only. Message submission does not yet create
+reminders, and no scheduler or email transport is connected. Recipient
+participation and reminder scheduling will be enforced by the application
+service in the next stage. Apply the pending migration before using reminder
+repositories against an existing local database.
 
 ## Reviews
 

@@ -8,13 +8,22 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ServiceRequest } from '../service-requests/service-request.entity.js';
 import { ServiceRequestMessage } from '../service-requests/service-request-message.entity.js';
+import { ServiceRequestMessageReminder } from '../service-requests/service-request-message-reminder.entity.js';
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 
 export default new DataSource({
   type: 'better-sqlite3',
   database: process.env.DATABASE_PATH ?? 'entraide.sqlite',
-  entities: [ServiceProvider, Review, ServiceOffering, User, ServiceRequest, ServiceRequestMessage],
+  entities: [
+    ServiceProvider,
+    Review,
+    ServiceOffering,
+    User,
+    ServiceRequest,
+    ServiceRequestMessage,
+    ServiceRequestMessageReminder,
+  ],
   migrations: [join(currentDirectory, 'migrations/*{.js,.ts}')],
   synchronize: false,
 });
