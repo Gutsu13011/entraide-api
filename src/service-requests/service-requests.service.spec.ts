@@ -12,6 +12,8 @@ import { Review } from '../reviews/review.entity.js';
 import { ServiceRequestMessage } from './service-request-message.entity.js';
 import { IsNull, LessThanOrEqual, Not } from 'typeorm';
 import type { CreateServiceRequestMessageDto } from './dto/create-service-request-message.dto.js';
+import { ServiceRequestMessageReminder } from './service-request-message-reminder.entity.js';
+import { ServiceRequestMessageReminderStatus as ReminderStatus } from './service-request-message-reminder-status.enum.js';
 
 describe('ServiceRequestsService', () => {
   let service: ServiceRequestsService;
@@ -26,6 +28,7 @@ describe('ServiceRequestsService', () => {
     update: vi.fn(),
   };
   const messageRepositoryMock = {
+    manager: { transaction: vi.fn() },
     count: vi.fn(),
     create: vi.fn(),
     save: vi.fn(),
@@ -340,13 +343,50 @@ describe('ServiceRequestsService', () => {
       7: { id: 7, firstName: 'Bruno', lastName: 'Leroy' },
     };
 
-    function expectNoMessageWrite() {
+    const transactionMessageRepositoryMock = {
+      create: vi.fn(),
+      save: vi.fn(),
+      findOneOrFail: vi.fn(),
+    };
+    const reminderQueryMock = {
+      insert: vi.fn(),
+      values: vi.fn(),
+      orIgnore: vi.fn(),
+      updateEntity: vi.fn(),
+      execute: vi.fn(),
+    };
+    const reminderRepositoryMock = { createQueryBuilder: vi.fn() };
+    const transactionManagerMock = { getRepository: vi.fn() };
+
+    afterEach(() => {
       expect(messageRepositoryMock.create).not.toHaveBeenCalled();
       expect(messageRepositoryMock.save).not.toHaveBeenCalled();
       expect(messageRepositoryMock.findOneOrFail).not.toHaveBeenCalled();
+    });
+
+    function expectNoMessageWrite() {
+      expect(messageRepositoryMock.manager.transaction).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.create).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.save).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.findOneOrFail).not.toHaveBeenCalled();
+      expect(reminderRepositoryMock.createQueryBuilder).not.toHaveBeenCalled();
+      expect(reminderQueryMock.execute).not.toHaveBeenCalled();
     }
 
     beforeEach(() => {
+      for (const method of ['insert', 'values', 'orIgnore', 'updateEntity'] as const) {
+        reminderQueryMock[method].mockReturnValue(reminderQueryMock);
+      }
+      reminderQueryMock.execute.mockResolvedValue({});
+      reminderRepositoryMock.createQueryBuilder.mockReturnValue(reminderQueryMock);
+      transactionManagerMock.getRepository.mockImplementation((entity) => {
+        if (entity === ServiceRequestMessage) return transactionMessageRepositoryMock;
+        if (entity === ServiceRequestMessageReminder) return reminderRepositoryMock;
+        throw new Error('Unexpected transaction repository');
+      });
+      messageRepositoryMock.manager.transaction.mockImplementation(async (work) =>
+        work(transactionManagerMock),
+      );
       conversation = Object.assign(new ServiceRequest(), {
         id: 42,
         requesterUserId: 8,
@@ -356,14 +396,14 @@ describe('ServiceRequestsService', () => {
         serviceOfferingId: 12,
       });
       requestRepositoryMock.findOneBy.mockResolvedValue(conversation);
-      messageRepositoryMock.create.mockImplementation((values) =>
+      transactionMessageRepositoryMock.create.mockImplementation((values) =>
         Object.assign(new ServiceRequestMessage(), values),
       );
-      messageRepositoryMock.save.mockImplementation(async (message) =>
+      transactionMessageRepositoryMock.save.mockImplementation(async (message) =>
         Object.assign(new ServiceRequestMessage(), message, { id: 101, createdAt }),
       );
-      messageRepositoryMock.findOneOrFail.mockImplementation(async () => {
-        const saved = await messageRepositoryMock.save.mock.results[0].value;
+      transactionMessageRepositoryMock.findOneOrFail.mockImplementation(async () => {
+        const saved = await transactionMessageRepositoryMock.save.mock.results[0].value;
         return Object.assign(new ServiceRequestMessage(), saved, {
           internalNote: 'Internal message data',
           serviceRequest: conversation,
@@ -382,16 +422,38 @@ describe('ServiceRequestsService', () => {
         const result = await service.createMessage(42, { content }, userId);
 
         expect(requestRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({ id: 42 });
-        expect(messageRepositoryMock.create).toHaveBeenCalledExactlyOnceWith({
+        expect(messageRepositoryMock.manager.transaction).toHaveBeenCalledExactlyOnceWith(
+          expect.any(Function),
+        );
+        expect(transactionManagerMock.getRepository).toHaveBeenCalledTimes(2);
+        expect(transactionManagerMock.getRepository).toHaveBeenNthCalledWith(
+          1,
+          ServiceRequestMessage,
+        );
+        expect(transactionManagerMock.getRepository).toHaveBeenNthCalledWith(
+          2,
+          ServiceRequestMessageReminder,
+        );
+        expect(reminderQueryMock.values).toHaveBeenCalledExactlyOnceWith({
+          serviceRequestId: 42,
+          recipientUserId: userId === 8 ? 7 : 8,
+          status: ReminderStatus.PENDING,
+          dueAt: new Date('2026-10-22T12:05:00.000Z'),
+          sentAt: null,
+        });
+        expect(reminderQueryMock.orIgnore).toHaveBeenCalledExactlyOnceWith();
+        expect(reminderQueryMock.updateEntity).toHaveBeenCalledExactlyOnceWith(false);
+        expect(reminderQueryMock.execute).toHaveBeenCalledTimes(1);
+        expect(transactionMessageRepositoryMock.create).toHaveBeenCalledExactlyOnceWith({
           content,
           serviceRequestId: 42,
           authorUserId: userId,
           readAt: null,
         });
-        expect(messageRepositoryMock.save).toHaveBeenCalledExactlyOnceWith(
-          messageRepositoryMock.create.mock.results[0].value,
+        expect(transactionMessageRepositoryMock.save).toHaveBeenCalledExactlyOnceWith(
+          transactionMessageRepositoryMock.create.mock.results[0].value,
         );
-        expect(messageRepositoryMock.findOneOrFail).toHaveBeenCalledExactlyOnceWith({
+        expect(transactionMessageRepositoryMock.findOneOrFail).toHaveBeenCalledExactlyOnceWith({
           where: { id: 101 },
           relations: { authorUser: true },
         });
@@ -434,6 +496,10 @@ describe('ServiceRequestsService', () => {
         id: 999,
         serviceRequestId: 999,
         authorUserId: 99,
+        recipientUserId: 99,
+        dueAt: new Date('2000-01-01T00:00:00.000Z'),
+        status: ReminderStatus.SENT,
+        sentAt: createdAt,
         createdAt: new Date('2000-01-01T00:00:00.000Z'),
         readAt: createdAt,
         authorUser: { id: 99, firstName: 'Forged', lastName: 'Author' },
@@ -441,7 +507,7 @@ describe('ServiceRequestsService', () => {
 
       const result = await service.createMessage(42, forgedDto, 8);
 
-      expect(messageRepositoryMock.create).toHaveBeenCalledExactlyOnceWith({
+      expect(transactionMessageRepositoryMock.create).toHaveBeenCalledExactlyOnceWith({
         content,
         serviceRequestId: 42,
         authorUserId: 8,
@@ -451,6 +517,13 @@ describe('ServiceRequestsService', () => {
       expect(result.createdAt).toEqual(createdAt);
       expect(result.readAt).toBeNull();
       expect(result.author).toEqual(authors[8]);
+      expect(reminderQueryMock.values).toHaveBeenCalledExactlyOnceWith({
+        serviceRequestId: 42,
+        recipientUserId: 7,
+        status: ReminderStatus.PENDING,
+        dueAt: new Date('2026-10-22T12:05:00.000Z'),
+        sentAt: null,
+      });
     });
 
     it('should keep historical conversations usable by their recorded participants after provider and offering deletion', async () => {
@@ -479,20 +552,133 @@ describe('ServiceRequestsService', () => {
 
     it('should propagate a message save failure without reloading or returning a successful response', async () => {
       const error = new Error('Message database unavailable');
-      messageRepositoryMock.save.mockRejectedValue(error);
+      transactionMessageRepositoryMock.save.mockRejectedValue(error);
 
       await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
 
-      expect(messageRepositoryMock.findOneOrFail).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.findOneOrFail).not.toHaveBeenCalled();
+      expect(reminderQueryMock.execute).not.toHaveBeenCalled();
     });
 
     it('should propagate a reload failure after saving instead of returning an incomplete message', async () => {
       const error = new Error('Message reload failed');
-      messageRepositoryMock.findOneOrFail.mockRejectedValue(error);
+      transactionMessageRepositoryMock.findOneOrFail.mockRejectedValue(error);
 
       await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
 
-      expect(messageRepositoryMock.save).toHaveBeenCalledOnce();
+      expect(transactionMessageRepositoryMock.save).toHaveBeenCalledOnce();
+    });
+
+    it('should calculate five minutes from the saved message timestamp across midnight with millisecond precision', async () => {
+      const savedAt = new Date('2026-10-25T23:58:59.123Z');
+      transactionMessageRepositoryMock.save.mockImplementation(async (message) =>
+        Object.assign(new ServiceRequestMessage(), message, { id: 101, createdAt: savedAt }),
+      );
+
+      await service.createMessage(42, { content }, 8);
+
+      expect(reminderQueryMock.values).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dueAt: new Date('2026-10-26T00:03:59.123Z'),
+        }),
+      );
+    });
+
+    it('should wait for reminder insertion before reloading the message and completing the transaction', async () => {
+      let releaseInsertion!: () => void;
+      let markStarted!: () => void;
+      const insertion = new Promise<void>((resolve) => {
+        releaseInsertion = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      reminderQueryMock.execute.mockImplementation(async () => {
+        markStarted();
+        await insertion;
+        return {};
+      });
+      const response = service.createMessage(42, { content }, 8);
+      await started;
+
+      try {
+        expect(transactionMessageRepositoryMock.save).toHaveBeenCalledOnce();
+        expect(transactionMessageRepositoryMock.findOneOrFail).not.toHaveBeenCalled();
+      } finally {
+        releaseInsertion();
+      }
+      await expect(response).resolves.toMatchObject({ id: 101, content });
+    });
+
+    it('should propagate reminder insertion failure and avoid reloading or returning a successful message', async () => {
+      const error = new Error('Reminder storage unavailable');
+      reminderQueryMock.execute.mockRejectedValue(error);
+
+      await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
+
+      expect(transactionMessageRepositoryMock.save).toHaveBeenCalledOnce();
+      expect(transactionMessageRepositoryMock.findOneOrFail).not.toHaveBeenCalled();
+    });
+
+    it('should propagate a failure to start the transaction without accessing its repository', async () => {
+      const error = new Error('Transaction unavailable');
+      messageRepositoryMock.manager.transaction.mockRejectedValue(error);
+
+      await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
+
+      expect(transactionManagerMock.getRepository).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.create).not.toHaveBeenCalled();
+      expect(transactionMessageRepositoryMock.save).not.toHaveBeenCalled();
+    });
+
+    it('should wait for transaction validation before resolving the message response', async () => {
+      let releaseCommit!: () => void;
+      let finishCallback!: () => void;
+      const commit = new Promise<void>((resolve) => {
+        releaseCommit = resolve;
+      });
+      const callbackFinished = new Promise<void>((resolve) => {
+        finishCallback = resolve;
+      });
+      messageRepositoryMock.manager.transaction.mockImplementation(async (work) => {
+        const result = await work(transactionManagerMock);
+        finishCallback();
+        await commit;
+        return result;
+      });
+      const response = service.createMessage(42, { content }, 8);
+      let settled = false;
+      void response.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await callbackFinished;
+
+      try {
+        expect(transactionMessageRepositoryMock.save).toHaveBeenCalledOnce();
+        expect(transactionMessageRepositoryMock.findOneOrFail).toHaveBeenCalledOnce();
+        expect(settled).toBe(false);
+      } finally {
+        releaseCommit();
+      }
+      await expect(response).resolves.toMatchObject({ id: 101, content, author: authors[8] });
+    });
+
+    it('should propagate transaction validation failure after preparing the message response', async () => {
+      const error = new Error('Transaction validation failed');
+      messageRepositoryMock.manager.transaction.mockImplementation(async (work) => {
+        await work(transactionManagerMock);
+        throw error;
+      });
+
+      await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
+
+      expect(transactionMessageRepositoryMock.save).toHaveBeenCalledOnce();
+      expect(transactionMessageRepositoryMock.findOneOrFail).toHaveBeenCalledOnce();
     });
 
     it('should wait for the participant check before creating a message', async () => {

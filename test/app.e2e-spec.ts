@@ -15,6 +15,8 @@ import { ServiceRequest } from '../src/service-requests/service-request.entity.j
 import { ServiceRequestStatus } from '../src/service-requests/service-request-status.enum.js';
 import { Review } from '../src/reviews/review.entity.js';
 import { ServiceRequestMessage } from '../src/service-requests/service-request-message.entity.js';
+import { ServiceRequestMessageReminder } from '../src/service-requests/service-request-message-reminder.entity.js';
+import { ServiceRequestMessageReminderStatus as ReminderStatus } from '../src/service-requests/service-request-message-reminder-status.enum.js';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 describe('AppController (e2e)', () => {
@@ -2296,12 +2298,16 @@ describe('AppController (e2e)', () => {
       const content = '  Bonjour, disponible samedi ?\nMerci !  ';
       let original: ServiceRequest;
       let messagesRepository: Repository<ServiceRequestMessage>;
+      let remindersRepository: Repository<ServiceRequestMessageReminder>;
 
       beforeEach(async () => {
         const created = await sendRequest().expect(201);
         original = await requestsRepository.findOneByOrFail({ id: created.body.id });
         messagesRepository = app.get<Repository<ServiceRequestMessage>>(
           getRepositoryToken(ServiceRequestMessage),
+        );
+        remindersRepository = app.get<Repository<ServiceRequestMessageReminder>>(
+          getRepositoryToken(ServiceRequestMessageReminder),
         );
       });
 
@@ -2318,6 +2324,7 @@ describe('AppController (e2e)', () => {
 
       async function expectNoMessage() {
         expect(await messagesRepository.count()).toBe(0);
+        expect(await remindersRepository.count()).toBe(0);
         expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
       }
 
@@ -2351,6 +2358,16 @@ describe('AppController (e2e)', () => {
             author,
           });
           expect(Number.isNaN(Date.parse(response.body.createdAt))).toBe(false);
+          const reminders = await remindersRepository.find();
+          expect(reminders).toHaveLength(1);
+          expect(reminders[0]).toMatchObject({
+            serviceRequestId: original.id,
+            recipientUserId: actor === 'requester' ? ownerId : requesterId,
+            status: ReminderStatus.PENDING,
+            dueAt: new Date(Date.parse(response.body.createdAt) + 5 * 60 * 1000),
+            sentAt: null,
+          });
+          expect(reminders[0].recipientUserId).not.toBe(authorId);
           expect(await messagesRepository.findOneByOrFail({ id: response.body.id })).toEqual({
             id: 101,
             content,
@@ -2364,6 +2381,176 @@ describe('AppController (e2e)', () => {
           expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
         },
       );
+
+      it.each(['requester', 'recipient'] as const)(
+        `${route} (POST) should roll back the %s message if author reloading fails after insertion`,
+        async (actor) => {
+          const previous = await messagesRepository.save({
+            content: 'Existing message',
+            serviceRequestId: original.id,
+            authorUserId: requesterId,
+            readAt: new Date('2026-10-22T09:00:00.000Z'),
+          });
+          const token = actor === 'requester' ? requesterToken : ownerToken;
+          const originalFind = Repository.prototype.findOneOrFail;
+          let observedCount = 0;
+          let observedReminders = 0;
+          let transactionActive = false;
+          const reload = vi
+            .spyOn(Repository.prototype, 'findOneOrFail')
+            .mockImplementation(async function (
+              this: Repository<Record<string, unknown>>,
+              options,
+            ) {
+              if (this.metadata.target === ServiceRequestMessage) {
+                transactionActive = this.manager.queryRunner?.isTransactionActive === true;
+                observedCount = await this.count();
+                observedReminders = await this.manager
+                  .getRepository(ServiceRequestMessageReminder)
+                  .count();
+                throw new Error('Simulated message reload failure');
+              }
+              return originalFind.call(this, options);
+            });
+          app.useLogger(false);
+          try {
+            await postMessage({ content }, token).expect(500);
+          } finally {
+            reload.mockRestore();
+          }
+
+          expect(transactionActive).toBe(true);
+          expect(observedCount).toBe(2);
+          expect(observedReminders).toBe(1);
+          expect(await remindersRepository.count()).toBe(0);
+          expect(await messagesRepository.find({ order: { id: 'ASC' } })).toEqual([previous]);
+          expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+          const retried = await postMessage({ content }, token).expect(201);
+          expect(retried.body.content).toBe(content);
+          expect(await remindersRepository.count()).toBe(1);
+          expect(await messagesRepository.count()).toBe(2);
+          expect(await messagesRepository.findOneByOrFail({ id: previous.id })).toEqual(previous);
+        },
+      );
+
+      describe('message reminder scheduling', () => {
+        it(`${route} (POST) should group successive replies without delaying the pending reminder`, async () => {
+          const first = await postMessage().expect(201);
+          const pending = await remindersRepository.findOneByOrFail({
+            serviceRequestId: original.id,
+            status: ReminderStatus.PENDING,
+          });
+          const oldCreatedAt = new Date('2026-10-20T12:00:00.000Z');
+          await messagesRepository.update(first.body.id, { createdAt: oldCreatedAt });
+          await remindersRepository.update(pending.id, {
+            createdAt: oldCreatedAt,
+            dueAt: new Date(oldCreatedAt.getTime() + 5 * 60 * 1000),
+          });
+          const originalReminder = await remindersRepository.findOneByOrFail({ id: pending.id });
+
+          await postMessage({ content: 'Deuxieme message' }).expect(201);
+          await postMessage({ content: 'Troisieme message' }).expect(201);
+
+          expect(await messagesRepository.count()).toBe(3);
+          expect(await remindersRepository.find()).toEqual([originalReminder]);
+          expect(originalReminder.recipientUserId).toBe(ownerId);
+        });
+
+        it(`${route} (POST) should maintain independent pending reminders for both conversation participants`, async () => {
+          await postMessage().expect(201);
+          const first = await remindersRepository.findOneByOrFail({
+            serviceRequestId: original.id,
+          });
+
+          await postMessage({ content: 'Reponse du prestataire' }, ownerToken).expect(201);
+
+          const reminders = await remindersRepository.find({ order: { id: 'ASC' } });
+          expect(reminders).toHaveLength(2);
+          expect(reminders[0]).toEqual(first);
+          expect(
+            reminders.map((reminder) => reminder.recipientUserId).sort((a, b) => a - b),
+          ).toEqual([ownerId, requesterId].sort((a, b) => a - b));
+          expect(reminders.every((reminder) => reminder.status === ReminderStatus.PENDING)).toBe(
+            true,
+          );
+        });
+
+        it(`${route} (POST) should keep reminders separate for two conversations with the same recipient`, async () => {
+          await postMessage().expect(201);
+          const other = await sendRequest({ message: 'Autre demande' }).expect(201);
+
+          await postMessage({ content: 'Autre discussion' }, requesterToken, other.body.id).expect(
+            201,
+          );
+
+          const reminders = await remindersRepository.find({ order: { serviceRequestId: 'ASC' } });
+          expect(reminders).toHaveLength(2);
+          expect(reminders.map((reminder) => reminder.serviceRequestId)).toEqual([
+            original.id,
+            other.body.id,
+          ]);
+          expect(reminders.every((reminder) => reminder.recipientUserId === ownerId)).toBe(true);
+        });
+
+        it.each([ReminderStatus.SENT, ReminderStatus.CANCELLED])(
+          `${route} (POST) should create a new pending reminder after the previous one becomes %s`,
+          async (status) => {
+            await postMessage().expect(201);
+            const first = await remindersRepository.findOneByOrFail({
+              serviceRequestId: original.id,
+            });
+            await remindersRepository.update(first.id, {
+              status,
+              sentAt: status === ReminderStatus.SENT ? new Date('2026-10-20T12:06:00.000Z') : null,
+            });
+            const historical = await remindersRepository.findOneByOrFail({ id: first.id });
+
+            const response = await postMessage({ content: 'Nouveau message' }).expect(201);
+
+            const reminders = await remindersRepository.find({ order: { id: 'ASC' } });
+            expect(reminders).toHaveLength(2);
+            expect(reminders[0]).toEqual(historical);
+            expect(reminders[1]).toMatchObject({
+              recipientUserId: ownerId,
+              serviceRequestId: original.id,
+              status: ReminderStatus.PENDING,
+              dueAt: new Date(Date.parse(response.body.createdAt) + 5 * 60 * 1000),
+              sentAt: null,
+            });
+          },
+        );
+
+        it(`${route} (POST) should roll back a message when reminder insertion fails and allow a later retry`, async () => {
+          await postMessage().expect(201);
+          const first = await remindersRepository.findOneByOrFail({
+            serviceRequestId: original.id,
+          });
+          await remindersRepository.update(first.id, {
+            status: ReminderStatus.SENT,
+            sentAt: new Date(),
+          });
+          const previousMessages = await messagesRepository.find({ order: { id: 'ASC' } });
+          const previousReminders = await remindersRepository.find({ order: { id: 'ASC' } });
+          await remindersRepository.query(
+            `CREATE TRIGGER fail_test_reminder_insert BEFORE INSERT ON service_request_message_reminders BEGIN SELECT RAISE(ABORT, 'Simulated reminder storage failure'); END`,
+          );
+          app.useLogger(false);
+          try {
+            await postMessage({ content: 'Message annule' }).expect(500);
+          } finally {
+            await remindersRepository.query('DROP TRIGGER fail_test_reminder_insert');
+          }
+
+          expect(await messagesRepository.find({ order: { id: 'ASC' } })).toEqual(previousMessages);
+          expect(await remindersRepository.find({ order: { id: 'ASC' } })).toEqual(
+            previousReminders,
+          );
+          expect(await requestsRepository.findOneByOrFail({ id: original.id })).toEqual(original);
+          await postMessage({ content: 'Nouvelle tentative' }).expect(201);
+          expect(await messagesRepository.count()).toBe(2);
+          expect(await remindersRepository.count()).toBe(2);
+        });
+      });
 
       it(`${route} (POST) should accept a message at the maximum length of 2000 characters`, async () => {
         const content = 'x'.repeat(2000);
@@ -2392,6 +2579,7 @@ describe('AppController (e2e)', () => {
 
       it.each([
         { field: 'authorUserId', value: 999 },
+        { field: 'recipientUserId', value: 999 },
         { field: 'serviceRequestId', value: 999 },
         { field: 'id', value: 999 },
         { field: 'createdAt', value: '2000-01-01T00:00:00.000Z' },
@@ -3647,7 +3835,11 @@ describe('AppController (e2e)', () => {
       async (actor) => {
         const token = actor === 'requester' ? requesterToken : unrelatedToken;
 
-        await patch({ status: ServiceRequestStatus.ACCEPTED }, token).expect(403);
+        const response = await patch({ status: ServiceRequestStatus.ACCEPTED }, token);
+        expect(
+          response.status,
+          `Unexpected status response for request ${original.id}: ${JSON.stringify(response.body)}`,
+        ).toBe(403);
 
         await expectStored();
       },

@@ -18,6 +18,8 @@ import { ServiceRequestMessageResponseDto } from './dto/service-request-message-
 import { CreateServiceRequestMessageDto } from './dto/create-service-request-message.dto.js';
 import { MarkServiceRequestMessagesReadDto } from './dto/mark-service-request-messages-read.dto.js';
 import { ServiceRequestUnreadMessageCountsDto } from './dto/service-request-unread-message-counts.dto.js';
+import { ServiceRequestMessageReminder } from './service-request-message-reminder.entity.js';
+import { ServiceRequestMessageReminderStatus } from './service-request-message-reminder-status.enum.js';
 
 @Injectable()
 export class ServiceRequestsService {
@@ -144,19 +146,44 @@ export class ServiceRequestsService {
     userId: number,
   ): Promise<ServiceRequestMessageResponseDto> {
     const serviceRequest = await this.findRequestForParticipant(serviceRequestId, userId);
-    const createMessage = this.serviceRequestMessageRepository.create({
-      content: createServiceRequestMessageDto.content,
-      serviceRequestId: serviceRequest.id,
-      authorUserId: userId,
-      readAt: null,
-    });
-    const savedMessage = await this.serviceRequestMessageRepository.save(createMessage);
-    const message = await this.serviceRequestMessageRepository.findOneOrFail({
-      where: { id: savedMessage.id },
-      relations: { authorUser: true },
-    });
 
-    return this.toMessageResponse(message);
+    return this.serviceRequestMessageRepository.manager.transaction(async (manager) => {
+      const messageRepository = manager.getRepository(ServiceRequestMessage);
+      const messageToCreate = messageRepository.create({
+        content: createServiceRequestMessageDto.content,
+        serviceRequestId: serviceRequest.id,
+        authorUserId: userId,
+        readAt: null,
+      });
+      const savedMessage = await messageRepository.save(messageToCreate);
+      const recipientUserId =
+        userId === serviceRequest.requesterUserId
+          ? serviceRequest.recipientUserId
+          : serviceRequest.requesterUserId;
+      const dueAt = new Date(savedMessage.createdAt.getTime() + 5 * 60 * 1000);
+
+      await manager
+        .getRepository(ServiceRequestMessageReminder)
+        .createQueryBuilder()
+        .insert()
+        .values({
+          serviceRequestId: serviceRequest.id,
+          recipientUserId,
+          status: ServiceRequestMessageReminderStatus.PENDING,
+          dueAt,
+          sentAt: null,
+        })
+        .orIgnore()
+        .updateEntity(false)
+        .execute();
+
+      const message = await messageRepository.findOneOrFail({
+        where: { id: savedMessage.id },
+        relations: { authorUser: true },
+      });
+
+      return this.toMessageResponse(message);
+    });
   }
 
   async findMessages(

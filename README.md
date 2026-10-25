@@ -296,6 +296,14 @@ and `lastName`; account emails, password hashes and internal relations are
 excluded. Sending a reply does not change the request's status or snapshots,
 or mark earlier messages as read.
 
+After the participant check, message insertion, pending reminder insertion,
+author reloading and response mapping run in one database transaction using
+its own entity manager. A save, reminder insertion or reload failure rolls
+back the new writes while retaining earlier replies and reminders. An existing
+pending reminder is handled as a uniqueness conflict with no extra insert,
+so it does not prevent saving another message. The response is resolved only
+after the transaction succeeds.
+
 `GET /service-requests/:id/messages` returns only that request's replies, ordered
 by creation date ascending and then id ascending. It requires the same
 participant access check as sending, including for an empty conversation. An
@@ -370,11 +378,20 @@ deleting only an offering or provider retains reminders linked to surviving
 requests. The migration creates only the new table and its indexes. Reverting
 it removes reminder records and leaves the existing tables unchanged.
 
-This stage provides storage only. Message submission does not yet create
-reminders, and no scheduler or email transport is connected. Recipient
-participation and reminder scheduling will be enforced by the application
-service in the next stage. Apply the pending migration before using reminder
-repositories against an existing local database.
+Every new conversation reply schedules a pending reminder for the other
+recorded participant. The due date is five minutes after the saved message's
+creation timestamp. Identity, status and dates come from trusted application
+data, and additional body fields such as a reminder recipient are rejected.
+An existing pending reminder keeps its original due date when more replies
+arrive. Both participants can have their own pending reminder, and reminders
+for different requests remain independent. Sent and cancelled records do not
+prevent scheduling a new pending reminder.
+
+The initial service request text and previously stored replies are not
+backfilled. Read updates do not yet cancel pending reminders; scheduled
+processing, cancellation and email transport will be connected in later
+steps. No emails are sent at this stage. Apply the reminder-table migration
+before using message submission against an existing local database.
 
 ## Reviews
 
