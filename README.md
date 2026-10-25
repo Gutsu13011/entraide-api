@@ -395,6 +395,12 @@ arrive. Both participants can have their own pending reminder, and reminders
 for different requests remain independent. Sent and cancelled records do not
 prevent scheduling a new pending reminder.
 
+`ServiceRequestMessageRemindersService.findDueReminders(now)` selects at most
+50 pending reminders whose due date is at or before the supplied time, ordered
+by due date and then id ascending. Without an argument it uses the current time.
+Selection is read-only and returns candidates for later processing: it does not
+mark messages as read, change reminder statuses or send emails.
+
 The initial service request text and previously stored replies are not
 backfilled. Reading all received replies cancels the corresponding pending
 reminder transactionally. A subsequent reply starts a new five-minute delay

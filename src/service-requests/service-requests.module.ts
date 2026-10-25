@@ -8,9 +8,10 @@ import { ServiceProvidersModule } from '../service-providers/service-providers.m
 import { AuthModule } from '../auth/auth.module.js';
 import { ServiceRequestMessage } from './service-request-message.entity.js';
 import { ServiceRequestMessageReminder } from './service-request-message-reminder.entity.js';
+import { ServiceRequestMessageRemindersService } from './service-request-message-reminders.service.js';
 
 @Module({
-  providers: [ServiceRequestsService],
+  providers: [ServiceRequestsService, ServiceRequestMessageRemindersService],
   controllers: [ServiceRequestsController],
   imports: [
     TypeOrmModule.forFeature([
