@@ -26,6 +26,7 @@ import { LinkReviewsToServiceRequests1792425147989 } from './database/migrations
 import { CreateServiceRequestMessagesTable1792655516545 } from './database/migrations/1792655516545-CreateServiceRequestMessagesTable.js';
 import { CreateServiceRequestMessageRemindersTable1792945282224 } from './database/migrations/1792945282224-CreateServiceRequestMessageRemindersTable.js';
 import { ScheduleModule } from '@nestjs/schedule';
+import { CreateRefreshSessionsTable1793030800379 } from './database/migrations/1793030800379-CreateRefreshSessionsTable.js';
 
 const testMigrations = [
   InitialSchema1789026143459,
@@ -39,6 +40,7 @@ const testMigrations = [
   LinkReviewsToServiceRequests1792425147989,
   CreateServiceRequestMessagesTable1792655516545,
   CreateServiceRequestMessageRemindersTable1792945282224,
+  CreateRefreshSessionsTable1793030800379,
 ];
 @Module({
   imports: [

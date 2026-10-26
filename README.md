@@ -128,6 +128,25 @@ The following operations require a valid access token:
 
 Provider, offering and review consultation endpoints remain public.
 
+### Refresh-session storage
+
+`CreateRefreshSessionsTable` adds `refresh_sessions` for the upcoming persistent
+sign-in flow. A row stores the owning user, a unique token hash, creation and
+expiration dates, and an optional revocation date. Multiple sessions per user
+are allowed. Deleting a user cascades to that user's sessions; deleting a session
+does not delete the user. Ordinary entity reads exclude `tokenHash`, while an
+explicit query can select it. No raw refresh token is stored in this table.
+
+The migration creates only this table, its user foreign key and its two indexes.
+Existing users, profiles, offerings, requests, reviews, messages and reminders
+are preserved. Reverting this migration removes refresh-session records only.
+The entity is registered for both Nest repository injection and the TypeORM CLI,
+and the migration is included in the E2E database initialization.
+
+Persistent sign-in is not yet connected: login still issues the existing
+15-minute access token. Token issuance, refresh cookies, renewal, logout
+revocation and Angular session restoration will follow this storage step.
+
 ### Provider ownership
 
 Each account can create at most one service provider profile. The API derives

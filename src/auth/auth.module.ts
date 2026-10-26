@@ -5,10 +5,13 @@ import { AuthController } from './auth.controller.js';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { RefreshSession } from './refresh-session.entity.js';
 
 @Module({
   providers: [AuthService, JwtAuthGuard],
   imports: [
+    TypeOrmModule.forFeature([RefreshSession]),
     UsersModule,
     JwtModule.registerAsync({
       inject: [ConfigService],

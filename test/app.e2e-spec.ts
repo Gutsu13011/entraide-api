@@ -66,7 +66,9 @@ describe('AppController (e2e)', () => {
         transform: true,
       }),
     );
-    await app.init();
+    // Keep one IPv4 loopback listener for the whole test instead of letting
+    // Supertest open and close an ephemeral listener for every request.
+    await app.listen(0, '127.0.0.1');
 
     const serviceProvidersRepository = app.get<Repository<ServiceProvider>>(
       getRepositoryToken(ServiceProvider),

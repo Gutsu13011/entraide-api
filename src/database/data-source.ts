@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { ServiceRequest } from '../service-requests/service-request.entity.js';
 import { ServiceRequestMessage } from '../service-requests/service-request-message.entity.js';
 import { ServiceRequestMessageReminder } from '../service-requests/service-request-message-reminder.entity.js';
+import { RefreshSession } from '../auth/refresh-session.entity.js';
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 
@@ -23,6 +24,7 @@ export default new DataSource({
     ServiceRequest,
     ServiceRequestMessage,
     ServiceRequestMessageReminder,
+    RefreshSession,
   ],
   migrations: [join(currentDirectory, 'migrations/*{.js,.ts}')],
   synchronize: false,
