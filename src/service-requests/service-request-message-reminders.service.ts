@@ -5,14 +5,18 @@ import { IsNull, LessThanOrEqual, Not, Repository } from 'typeorm';
 import { ServiceRequestMessageReminderStatus } from './service-request-message-reminder-status.enum.js';
 import { ServiceRequestMessage } from './service-request-message.entity.js';
 import type { ServiceRequestMessageReminderEmail } from './service-request-message-reminder-email.js';
+import { MailService } from '../mail/mail.service.js';
 @Injectable()
 export class ServiceRequestMessageRemindersService {
+  private readonly sendingReminderIds = new Set<number>();
+
   constructor(
     @InjectRepository(ServiceRequestMessageReminder)
-    private readonly serviceRequestMessageReminder: Repository<ServiceRequestMessageReminder>,
+    private readonly serviceRequestMessageReminderRepository: Repository<ServiceRequestMessageReminder>,
+    private readonly mailService: MailService,
   ) {}
   async findDueReminders(now: Date = new Date()): Promise<ServiceRequestMessageReminder[]> {
-    return this.serviceRequestMessageReminder.find({
+    return this.serviceRequestMessageReminderRepository.find({
       where: {
         status: ServiceRequestMessageReminderStatus.PENDING,
         dueAt: LessThanOrEqual(now),
@@ -26,7 +30,7 @@ export class ServiceRequestMessageRemindersService {
     reminderId: number,
     now: Date = new Date(),
   ): Promise<ServiceRequestMessageReminder | null> {
-    return this.serviceRequestMessageReminder.manager.transaction(async (manager) => {
+    return this.serviceRequestMessageReminderRepository.manager.transaction(async (manager) => {
       const remindersRepository = manager.getRepository(ServiceRequestMessageReminder);
       const reminder = await remindersRepository.findOneBy({
         id: reminderId,
@@ -105,5 +109,41 @@ export class ServiceRequestMessageRemindersService {
       subject: 'Entraide : des messages vous attendent',
       text,
     };
+  }
+
+  async sendReminder(reminderId: number, now: Date = new Date()): Promise<boolean> {
+    if (this.sendingReminderIds.has(reminderId)) {
+      return false;
+    }
+
+    this.sendingReminderIds.add(reminderId);
+
+    try {
+      const email = await this.prepareReminderEmail(reminderId, now);
+
+      if (email === null) {
+        return false;
+      }
+
+      await this.mailService.sendText(email.to, email.subject, email.text);
+
+      const result = await this.serviceRequestMessageReminderRepository.update(
+        {
+          id: reminderId,
+        },
+        {
+          status: ServiceRequestMessageReminderStatus.SENT,
+          sentAt: new Date(),
+        },
+      );
+
+      if (result.affected !== 1) {
+        throw new Error('Sent reminder could not be recorded');
+      }
+
+      return true;
+    } finally {
+      this.sendingReminderIds.delete(reminderId);
+    }
   }
 }

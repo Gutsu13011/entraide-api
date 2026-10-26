@@ -33,8 +33,22 @@ describe('AppController (e2e)', () => {
     await request(app.getHttpServer()).post('/auth/register').send(validUser).expect(201);
     const loginResponse = await request(app.getHttpServer())
       .post('/auth/login')
-      .send({ email: validUser.email, password: validUser.password })
-      .expect(200);
+      .send({ email: validUser.email, password: validUser.password });
+    if (loginResponse.status !== 200) {
+      const stored = await app.get(UsersService).findByEmailWithPassword(validUser.email);
+      const passwordMatches =
+        stored !== null && (await argon2.verify(stored.passwordHash, validUser.password));
+      expect(
+        loginResponse.status,
+        JSON.stringify({
+          fixtureEmail: validUser.email,
+          response: loginResponse.body,
+          storedUserExists: stored !== null,
+          passwordMatches,
+        }),
+      ).toBe(200);
+    }
+    expect(loginResponse.status).toBe(200);
 
     return loginResponse.body.accessToken;
   }

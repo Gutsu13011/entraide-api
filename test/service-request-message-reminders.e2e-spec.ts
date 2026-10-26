@@ -12,6 +12,7 @@ import { ServiceRequestMessageReminder } from '../src/service-requests/service-r
 import { ServiceRequestMessageReminderStatus as ReminderStatus } from '../src/service-requests/service-request-message-reminder-status.enum.js';
 import { ServiceRequestMessageRemindersService } from '../src/service-requests/service-request-message-reminders.service.js';
 import { MailService } from '../src/mail/mail.service.js';
+import { ServiceRequestsService } from '../src/service-requests/service-requests.service.js';
 
 describe('ServiceRequestMessageRemindersService (database integration)', () => {
   let app: INestApplication;
@@ -598,6 +599,274 @@ describe('ServiceRequestMessageRemindersService (database integration)', () => {
         to: users[1].email,
         text: expect.stringContaining('Bonjour Bruno,'),
       });
+    });
+  });
+
+  describe('sendReminder', () => {
+    let reminder: ServiceRequestMessageReminder;
+    let originalMessage: ServiceRequestMessage;
+    let sendText: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(async () => {
+      [reminder] = await seedReminders([{ dueAt: now }]);
+      originalMessage = await messages.save({
+        serviceRequestId: reminder.serviceRequestId,
+        authorUserId: users[0].id,
+        content: 'Une réponse encore non lue',
+        createdAt: new Date(now.getTime() - 5 * 60_000),
+        readAt: null,
+      });
+      sendText = vi.spyOn(app.get(MailService), 'sendText').mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      sendText.mockRestore();
+    });
+
+    async function snapshot() {
+      return {
+        reminders: await reminders.find({ order: { id: 'ASC' } }),
+        requests: await requests.find({ order: { id: 'ASC' } }),
+        messages: await messages.find({ order: { id: 'ASC' } }),
+      };
+    }
+
+    it.each(['requester', 'recipient'] as const)(
+      'should send to the recorded %s and mark only that reminder sent after SMTP acceptance',
+      async (role) => {
+        const person = role === 'requester' ? users[0] : users[1];
+        const author = users.find((user) => user.id !== person.id)!;
+        await reminders.update(reminder.id, { recipientUserId: person.id });
+        reminder = await reminders.findOneByOrFail({ id: reminder.id });
+        await messages.update(originalMessage.id, { authorUserId: author.id });
+        await seedReminders([{ dueAt: now }]);
+        const before = await snapshot();
+        const startedAt = Date.now();
+        sendText.mockImplementationOnce(async () => {
+          expect(reminders.manager.connection.createQueryRunner().isTransactionActive).toBe(false);
+          expect(await reminders.findOneByOrFail({ id: reminder.id })).toEqual(reminder);
+        });
+
+        await expect(service.sendReminder(reminder.id, now)).resolves.toBe(true);
+
+        expect(sendText).toHaveBeenCalledExactlyOnceWith(
+          person.email,
+          'Entraide : des messages vous attendent',
+          `Bonjour ${person.firstName},\n\nDes messages non lus vous attendent concernant « Conseil ».\n\nConnectez-vous à Entraide pour consulter votre discussion.\n\nL’équipe Entraide`,
+        );
+        const sent = await reminders.findOneByOrFail({ id: reminder.id });
+        expect(sent).toEqual({
+          ...reminder,
+          status: ReminderStatus.SENT,
+          sentAt: expect.any(Date),
+        });
+        expect(sent.sentAt!.getTime()).toBeGreaterThanOrEqual(startedAt);
+        expect(sent.sentAt!.getTime()).toBeLessThanOrEqual(Date.now());
+        expect(await snapshot()).toEqual({
+          ...before,
+          reminders: before.reminders.map((row) => (row.id === sent.id ? sent : row)),
+        });
+        await expect(service.sendReminder(reminder.id, now)).resolves.toBe(false);
+        expect(sendText).toHaveBeenCalledOnce();
+      },
+    );
+
+    it.each(['missing', 'sent', 'cancelled', 'future'] as const)(
+      'should skip a %s reminder without SMTP or data changes',
+      async (kind) => {
+        if (kind === 'sent')
+          await reminders.update(reminder.id, { status: ReminderStatus.SENT, sentAt: now });
+        else if (kind === 'cancelled')
+          await reminders.update(reminder.id, { status: ReminderStatus.CANCELLED });
+        else if (kind === 'future')
+          await reminders.update(reminder.id, { dueAt: new Date(now.getTime() + 1) });
+        const before = await snapshot();
+
+        await expect(
+          service.sendReminder(kind === 'missing' ? 999_999 : reminder.id, now),
+        ).resolves.toBe(false);
+
+        expect(sendText).not.toHaveBeenCalled();
+        expect(await snapshot()).toEqual(before);
+      },
+    );
+
+    it('should cancel a now-read reminder and skip SMTP', async () => {
+      await messages.update(originalMessage.id, { readAt: now });
+      await expect(service.sendReminder(reminder.id, now)).resolves.toBe(false);
+      expect(sendText).not.toHaveBeenCalled();
+      expect(await reminders.findOneByOrFail({ id: reminder.id })).toEqual({
+        ...reminder,
+        status: ReminderStatus.CANCELLED,
+      });
+    });
+
+    it('should release the guard after postponement and allow a send once the new deadline is reached', async () => {
+      await messages.update(originalMessage.id, { createdAt: new Date(now.getTime() - 60_000) });
+      const eligibleAt = new Date(now.getTime() + 4 * 60_000);
+
+      await expect(service.sendReminder(reminder.id, now)).resolves.toBe(false);
+      expect(sendText).not.toHaveBeenCalled();
+      expect(await reminders.findOneByOrFail({ id: reminder.id })).toEqual({
+        ...reminder,
+        dueAt: eligibleAt,
+      });
+      await expect(service.sendReminder(reminder.id, eligibleAt)).resolves.toBe(true);
+      expect(sendText).toHaveBeenCalledOnce();
+    });
+
+    it('should preserve pending state after SMTP failure and release the guard for an explicit retry', async () => {
+      const before = await snapshot();
+      const error = new Error('SMTP unavailable');
+      sendText.mockRejectedValueOnce(error);
+
+      await expect(service.sendReminder(reminder.id, now)).rejects.toBe(error);
+      expect(await snapshot()).toEqual(before);
+      expect(sendText).toHaveBeenCalledOnce();
+
+      await expect(service.sendReminder(reminder.id, now)).resolves.toBe(true);
+      expect(sendText).toHaveBeenCalledTimes(2);
+    });
+
+    it('should propagate preparation failure without SMTP and release the guard for retry', async () => {
+      const before = await snapshot();
+      const error = new Error('Preparation failed');
+      const prepare = vi.spyOn(service, 'prepareReminderEmail').mockRejectedValueOnce(error);
+      try {
+        await expect(service.sendReminder(reminder.id, now)).rejects.toBe(error);
+        expect(sendText).not.toHaveBeenCalled();
+        expect(await snapshot()).toEqual(before);
+      } finally {
+        prepare.mockRestore();
+      }
+      await expect(service.sendReminder(reminder.id, now)).resolves.toBe(true);
+    });
+
+    it('should propagate a database failure after SMTP acceptance and release the guard without pretending SMTP was undone', async () => {
+      const before = await snapshot();
+      await reminders.query(
+        `CREATE TRIGGER fail_test_sent_update BEFORE UPDATE ON service_request_message_reminders WHEN NEW.status = 'SENT' BEGIN SELECT RAISE(ABORT, 'Simulated sent storage failure'); END`,
+      );
+      try {
+        await expect(service.sendReminder(reminder.id, now)).rejects.toThrow(
+          'Simulated sent storage failure',
+        );
+      } finally {
+        await reminders.query('DROP TRIGGER fail_test_sent_update');
+      }
+      expect(sendText).toHaveBeenCalledOnce();
+      expect(await snapshot()).toEqual(before);
+      // This is an explicit retry after acceptance: SMTP and SQLite cannot commit atomically.
+      await expect(service.sendReminder(reminder.id, now)).resolves.toBe(true);
+      expect(sendText).toHaveBeenCalledTimes(2);
+    });
+
+    it('should reject a send result when the reminder disappeared before its sent state could be recorded', async () => {
+      sendText.mockImplementationOnce(async () => {
+        await reminders.delete(reminder.id);
+      });
+
+      await expect(service.sendReminder(reminder.id, now)).rejects.toThrow(
+        'Sent reminder could not be recorded',
+      );
+
+      expect(sendText).toHaveBeenCalledOnce();
+      expect(await reminders.count()).toBe(0);
+      expect(await messages.findOneByOrFail({ id: originalMessage.id })).toEqual(originalMessage);
+    });
+
+    it('should record an accepted email even if reading cancelled the reminder in flight and preserve a new pending reminder', async () => {
+      const requestService = app.get(ServiceRequestsService);
+      let nextReminder!: ServiceRequestMessageReminder;
+      sendText.mockImplementationOnce(async () => {
+        await requestService.markMessagesAsRead(
+          reminder.serviceRequestId,
+          { upToMessageId: originalMessage.id },
+          users[1].id,
+        );
+        expect((await reminders.findOneByOrFail({ id: reminder.id })).status).toBe(
+          ReminderStatus.CANCELLED,
+        );
+        await requestService.createMessage(
+          reminder.serviceRequestId,
+          { content: 'Nouvelle réponse après lecture' },
+          users[0].id,
+        );
+        nextReminder = await reminders.findOneByOrFail({
+          serviceRequestId: reminder.serviceRequestId,
+          recipientUserId: reminder.recipientUserId,
+          status: ReminderStatus.PENDING,
+        });
+        expect(nextReminder.id).not.toBe(reminder.id);
+      });
+
+      await expect(service.sendReminder(reminder.id, now)).resolves.toBe(true);
+
+      expect(await reminders.findOneByOrFail({ id: nextReminder.id })).toEqual(nextReminder);
+      expect(await reminders.findOneByOrFail({ id: reminder.id })).toMatchObject({
+        status: ReminderStatus.SENT,
+        sentAt: expect.any(Date),
+      });
+      expect(await reminders.count()).toBe(2);
+      expect(sendText).toHaveBeenCalledOnce();
+    });
+
+    it('should skip concurrent calls for the same id and timestamp the send after the deferred SMTP confirmation', async () => {
+      let accept!: () => void;
+      sendText.mockReturnValue(
+        new Promise<void>((resolve) => {
+          accept = resolve;
+        }),
+      );
+      const pending = service.sendReminder(reminder.id, now);
+      try {
+        await expect(service.sendReminder(reminder.id, now)).resolves.toBe(false);
+        await vi.waitFor(() => expect(sendText).toHaveBeenCalledOnce());
+        expect(await reminders.findOneByOrFail({ id: reminder.id })).toEqual(reminder);
+        const confirmedAt = new Date(now.getTime() + 2 * 60_000);
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(confirmedAt);
+        accept();
+        await expect(pending).resolves.toBe(true);
+        expect(await reminders.findOneByOrFail({ id: reminder.id })).toEqual({
+          ...reminder,
+          status: ReminderStatus.SENT,
+          sentAt: confirmedAt,
+        });
+      } finally {
+        accept();
+        await pending.catch(() => undefined);
+        vi.useRealTimers();
+      }
+    });
+
+    it('should hold the per-id guard and not report success until the sent update finishes', async () => {
+      const realUpdate = reminders.update.bind(reminders);
+      let finishUpdate!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        finishUpdate = resolve;
+      });
+      const update = vi.spyOn(reminders, 'update').mockImplementationOnce(async (...args) => {
+        await gate;
+        return realUpdate(...args);
+      });
+      const settled = vi.fn();
+      const pending = service.sendReminder(reminder.id, now);
+      void pending.then(settled);
+      try {
+        await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
+        expect(sendText).toHaveBeenCalledOnce();
+        expect(settled).not.toHaveBeenCalled();
+        await expect(service.sendReminder(reminder.id, now)).resolves.toBe(false);
+        expect(await reminders.findOneByOrFail({ id: reminder.id })).toEqual(reminder);
+        finishUpdate();
+        await expect(pending).resolves.toBe(true);
+        expect(settled).toHaveBeenCalledOnce();
+      } finally {
+        finishUpdate();
+        await pending.catch(() => undefined);
+        update.mockRestore();
+      }
     });
   });
 });

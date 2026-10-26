@@ -427,6 +427,22 @@ Preparation does not send SMTP, mark messages as read or reserve a reminder:
 repeated calls can return the same eligible reminder and email. Scheduling and
 automatic reminder delivery are not yet connected.
 
+`sendReminder(id, now)` prepares the email, waits for SMTP acceptance, then
+records `SENT` and a server-generated `sentAt` timestamp taken after confirmation.
+It returns `true` only after one reminder row was updated, or `false` when the
+reminder is inadmissible or already being sent by this service instance.
+Preparation, SMTP and persistence failures propagate to the caller.
+
+An in-memory set excludes overlapping sends of the same reminder id for the
+lifetime of this service instance. The entry is released on every outcome,
+including skipped reminders and errors. This guard is not shared across API
+processes. Sending takes place after the preparation transaction has closed.
+SMTP acceptance and the database update are separate operations: a failed
+recording cannot undo an accepted email, and an explicit retry can send it again.
+If reading cancels a reminder while SMTP is in progress, successful acceptance
+is recorded on that exact reminder; a newer pending reminder remains unchanged.
+No scheduled worker calls this method yet.
+
 The initial service request text and previously stored replies are not
 backfilled. Reading all received replies cancels the corresponding pending
 reminder transactionally. A subsequent reply starts a new five-minute delay
