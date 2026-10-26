@@ -1,7 +1,7 @@
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import type { Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { AppModule } from '../src/app.module.js';
 import { User } from '../src/users/user.entity.js';
 import { ServiceRequest } from '../src/service-requests/service-request.entity.js';
@@ -11,6 +11,7 @@ import { ServiceRequestMessage } from '../src/service-requests/service-request-m
 import { ServiceRequestMessageReminder } from '../src/service-requests/service-request-message-reminder.entity.js';
 import { ServiceRequestMessageReminderStatus as ReminderStatus } from '../src/service-requests/service-request-message-reminder-status.enum.js';
 import { ServiceRequestMessageRemindersService } from '../src/service-requests/service-request-message-reminders.service.js';
+import { MailService } from '../src/mail/mail.service.js';
 
 describe('ServiceRequestMessageRemindersService (database integration)', () => {
   let app: INestApplication;
@@ -182,6 +183,22 @@ describe('ServiceRequestMessageRemindersService (database integration)', () => {
     expect(await messages.find({ order: { id: 'ASC' } })).toEqual(before.messages);
   });
 
+  function expectedPreparedReminder(reminder: ServiceRequestMessageReminder) {
+    const recipient = users.find((user) => user.id === reminder.recipientUserId)!;
+    return {
+      ...reminder,
+      recipientUser: expect.objectContaining({
+        id: recipient.id,
+        firstName: recipient.firstName,
+        email: recipient.email,
+      }),
+      serviceRequest: expect.objectContaining({
+        id: reminder.serviceRequestId,
+        offeringTitleSnapshot: 'Conseil',
+      }),
+    };
+  }
+
   describe('prepareReminder', () => {
     let reminder: ServiceRequestMessageReminder;
 
@@ -322,7 +339,7 @@ describe('ServiceRequestMessageRemindersService (database integration)', () => {
 
       const result = await service.prepareReminder(reminder.id, now);
 
-      expect(result).toEqual(ready ? reminder : null);
+      expect(result).toEqual(ready ? expectedPreparedReminder(reminder) : null);
       expect(await snapshot()).toEqual({
         ...before,
         reminders: ready
@@ -341,8 +358,12 @@ describe('ServiceRequestMessageRemindersService (database integration)', () => {
       await addMessage({ createdAt: new Date(now.getTime() - 60_000) });
       const before = await snapshot();
 
-      await expect(service.prepareReminder(reminder.id, now)).resolves.toEqual(reminder);
-      await expect(service.prepareReminder(reminder.id, now)).resolves.toEqual(reminder);
+      await expect(service.prepareReminder(reminder.id, now)).resolves.toEqual(
+        expectedPreparedReminder(reminder),
+      );
+      await expect(service.prepareReminder(reminder.id, now)).resolves.toEqual(
+        expectedPreparedReminder(reminder),
+      );
 
       expect(await snapshot()).toEqual(before);
     });
@@ -389,11 +410,194 @@ describe('ServiceRequestMessageRemindersService (database integration)', () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(now);
       try {
-        await expect(service.prepareReminder(reminder.id)).resolves.toEqual(reminder);
+        await expect(service.prepareReminder(reminder.id)).resolves.toEqual(
+          expectedPreparedReminder(reminder),
+        );
       } finally {
         vi.useRealTimers();
       }
       expect(await snapshot()).toEqual(before);
+    });
+  });
+
+  describe('prepareReminderEmail', () => {
+    let reminder: ServiceRequestMessageReminder;
+    let sendText: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(async () => {
+      [reminder] = await seedReminders([{ dueAt: now }]);
+      // Preparation must never send SMTP, even if a regression accidentally calls MailService.
+      sendText = vi
+        .spyOn(app.get(MailService), 'sendText')
+        .mockRejectedValue(new Error('Unexpected email send during preparation'));
+    });
+
+    afterEach(() => {
+      expect(sendText).not.toHaveBeenCalled();
+      sendText.mockRestore();
+    });
+
+    async function snapshot() {
+      return {
+        reminders: await reminders.find({ order: { id: 'ASC' } }),
+        requests: await requests.find({ order: { id: 'ASC' } }),
+        messages: await messages.find({ order: { id: 'ASC' } }),
+      };
+    }
+
+    function addReceivedMessage(age = 5 * 60_000) {
+      return messages.save({
+        serviceRequestId: reminder.serviceRequestId,
+        authorUserId: users.find((user) => user.id !== reminder.recipientUserId)!.id,
+        content: 'Contenu privé de la discussion à ne pas inclure dans le rappel.',
+        createdAt: new Date(now.getTime() - age),
+        readAt: null,
+      });
+    }
+
+    it.each(['requester', 'recipient'] as const)(
+      'should prepare only email fields for the recorded %s using current account details and the historical offering title',
+      async (role) => {
+        const person = role === 'requester' ? users[0] : users[1];
+        await reminders.update(reminder.id, { recipientUserId: person.id });
+        reminder = await reminders.findOneByOrFail({ id: reminder.id });
+        const userRepository = app.get<Repository<User>>(getRepositoryToken(User));
+        await userRepository.update(person.id, {
+          firstName: 'Élodie',
+          email: 'elodie@example.test',
+        });
+        await requests.update(reminder.serviceRequestId, {
+          offeringTitleSnapshot: 'Aide à l’électricité',
+        });
+        await addReceivedMessage();
+        const before = await snapshot();
+
+        const email = await service.prepareReminderEmail(reminder.id, now);
+
+        expect(email).toEqual({
+          to: 'elodie@example.test',
+          subject: 'Entraide : des messages vous attendent',
+          text: 'Bonjour Élodie,\n\nDes messages non lus vous attendent concernant « Aide à l’électricité ».\n\nConnectez-vous à Entraide pour consulter votre discussion.\n\nL’équipe Entraide',
+        });
+        const prepared = await service.prepareReminder(reminder.id, now);
+        expect(prepared!.recipientUser).toMatchObject({
+          id: person.id,
+          firstName: 'Élodie',
+          email: 'elodie@example.test',
+        });
+        expect(prepared!.recipientUser.passwordHash).toBeUndefined();
+        expect(prepared!.serviceRequest).toMatchObject({
+          id: reminder.serviceRequestId,
+          offeringTitleSnapshot: 'Aide à l’électricité',
+          serviceOfferingId: null,
+        });
+        await expect(service.prepareReminderEmail(reminder.id, now)).resolves.toEqual(email);
+        expect(await snapshot()).toEqual(before);
+      },
+    );
+
+    it.each(['missing', 'sent', 'cancelled', 'future'] as const)(
+      'should return no email for a %s reminder and preserve stored data',
+      async (kind) => {
+        await addReceivedMessage();
+        if (kind === 'sent') {
+          await reminders.update(reminder.id, { status: ReminderStatus.SENT, sentAt: now });
+        } else if (kind === 'cancelled') {
+          await reminders.update(reminder.id, { status: ReminderStatus.CANCELLED });
+        } else if (kind === 'future') {
+          await reminders.update(reminder.id, { dueAt: new Date(now.getTime() + 1) });
+        }
+        const before = await snapshot();
+
+        await expect(
+          service.prepareReminderEmail(kind === 'missing' ? 999_999 : reminder.id, now),
+        ).resolves.toBeNull();
+        expect(await snapshot()).toEqual(before);
+      },
+    );
+
+    it('should cancel a reminder and return no email when all received messages have been read', async () => {
+      const message = await addReceivedMessage();
+      await messages.update(message.id, { readAt: now });
+      const before = await snapshot();
+
+      await expect(service.prepareReminderEmail(reminder.id, now)).resolves.toBeNull();
+
+      expect(await snapshot()).toEqual({
+        ...before,
+        reminders: [{ ...reminder, status: ReminderStatus.CANCELLED }],
+      });
+    });
+
+    it('should postpone a reminder and return no email while the oldest unread message is too recent', async () => {
+      await addReceivedMessage(60_000);
+      const before = await snapshot();
+
+      await expect(service.prepareReminderEmail(reminder.id, now)).resolves.toBeNull();
+
+      expect(await snapshot()).toEqual({
+        ...before,
+        reminders: [{ ...reminder, dueAt: new Date(now.getTime() + 4 * 60_000) }],
+      });
+    });
+
+    it('should use the current time when no preparation date is supplied', async () => {
+      await addReceivedMessage();
+      const before = await snapshot();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(now);
+      try {
+        await expect(service.prepareReminderEmail(reminder.id)).resolves.toMatchObject({
+          to: users[1].email,
+          subject: 'Entraide : des messages vous attendent',
+          text: expect.stringContaining('Bonjour Bruno,'),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it('should propagate a relation reload failure from the transaction without returning an email', async () => {
+      await addReceivedMessage();
+      const before = await snapshot();
+      const error = new Error('Recipient relation reload failed');
+      const reload = vi
+        .spyOn(Repository.prototype, 'findOneOrFail')
+        .mockImplementationOnce(async function () {
+          expect(this.metadata.target).toBe(ServiceRequestMessageReminder);
+          expect(this.manager.queryRunner?.isTransactionActive).toBe(true);
+          throw error;
+        });
+      try {
+        await expect(service.prepareReminderEmail(reminder.id, now)).rejects.toBe(error);
+        expect(reload).toHaveBeenCalledOnce();
+      } finally {
+        reload.mockRestore();
+      }
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it('should not return an email when commit fails and should allow a later explicit retry', async () => {
+      await addReceivedMessage();
+      const before = await snapshot();
+      const source = reminders.manager.connection;
+      const runner = source.createQueryRunner();
+      const error = new Error('Prepared email transaction commit failed');
+      const createRunner = vi.spyOn(source, 'createQueryRunner').mockReturnValue(runner);
+      const commit = vi.spyOn(runner, 'commitTransaction').mockRejectedValueOnce(error);
+      try {
+        await expect(service.prepareReminderEmail(reminder.id, now)).rejects.toBe(error);
+        expect(commit).toHaveBeenCalledOnce();
+      } finally {
+        commit.mockRestore();
+        createRunner.mockRestore();
+      }
+      expect(await snapshot()).toEqual(before);
+      await expect(service.prepareReminderEmail(reminder.id, now)).resolves.toMatchObject({
+        to: users[1].email,
+        text: expect.stringContaining('Bonjour Bruno,'),
+      });
     });
   });
 });

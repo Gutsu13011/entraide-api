@@ -412,9 +412,20 @@ the due date to that reply's creation time plus five minutes. Otherwise it retur
 the unchanged pending reminder. Missing, terminal or future reminders return
 `null`, as do cancelled or postponed candidates. All database operations use the
 transaction manager; a failure rolls back changes and propagates to the caller.
-Preparation does not mark messages as read or reserve a reminder: repeated calls
-can return the same eligible reminder. Scheduling and email delivery are not yet
-connected.
+Eligible reminders are reloaded with their recipient account and service request
+inside the transaction. The account password hash is not selected.
+
+`prepareReminderEmail(id, now)` returns only `to`, `subject` and a plain-text
+`text` for an eligible reminder, or `null` after the existing preparation rules.
+It uses the recorded reminder recipient's current account email and first name,
+and the request's historical offering title even when the offering no longer
+exists. Paragraphs use line breaks, with Unicode preserved. No message contents,
+password hashes or internal entity fields are included in the email object.
+Reload or commit failures propagate without returning a prepared email.
+
+Preparation does not send SMTP, mark messages as read or reserve a reminder:
+repeated calls can return the same eligible reminder and email. Scheduling and
+automatic reminder delivery are not yet connected.
 
 The initial service request text and previously stored replies are not
 backfilled. Reading all received replies cancels the corresponding pending

@@ -4,7 +4,7 @@ import { ServiceRequestMessageReminder } from './service-request-message-reminde
 import { IsNull, LessThanOrEqual, Not, Repository } from 'typeorm';
 import { ServiceRequestMessageReminderStatus } from './service-request-message-reminder-status.enum.js';
 import { ServiceRequestMessage } from './service-request-message.entity.js';
-
+import type { ServiceRequestMessageReminderEmail } from './service-request-message-reminder-email.js';
 @Injectable()
 export class ServiceRequestMessageRemindersService {
   constructor(
@@ -73,7 +73,37 @@ export class ServiceRequestMessageRemindersService {
         return null;
       }
 
-      return reminder;
+      return remindersRepository.findOneOrFail({
+        where: { id: reminder.id },
+        relations: { recipientUser: true, serviceRequest: true },
+      });
     });
+  }
+
+  async prepareReminderEmail(
+    reminderId: number,
+    now: Date = new Date(),
+  ): Promise<ServiceRequestMessageReminderEmail | null> {
+    const reminder = await this.prepareReminder(reminderId, now);
+
+    if (reminder === null) {
+      return null;
+    }
+
+    const text = [
+      `Bonjour ${reminder.recipientUser.firstName},`,
+      '',
+      `Des messages non lus vous attendent concernant « ${reminder.serviceRequest.offeringTitleSnapshot} ».`,
+      '',
+      'Connectez-vous à Entraide pour consulter votre discussion.',
+      '',
+      'L’équipe Entraide',
+    ].join('\n');
+
+    return {
+      to: reminder.recipientUser.email,
+      subject: 'Entraide : des messages vous attendent',
+      text,
+    };
   }
 }
