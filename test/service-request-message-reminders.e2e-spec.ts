@@ -578,7 +578,7 @@ describe('ServiceRequestMessageRemindersService (database integration)', () => {
       const error = new Error('Recipient relation reload failed');
       const reload = vi
         .spyOn(Repository.prototype, 'findOneOrFail')
-        .mockImplementationOnce(async function () {
+        .mockImplementationOnce(async function (this: Repository<ServiceRequestMessageReminder>) {
           expect(this.metadata.target).toBe(ServiceRequestMessageReminder);
           expect(this.manager.queryRunner?.isTransactionActive).toBe(true);
           throw error;

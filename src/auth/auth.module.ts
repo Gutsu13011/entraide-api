@@ -7,9 +7,10 @@ import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { RefreshSession } from './refresh-session.entity.js';
+import { RefreshSessionsService } from './refresh-sessions.service.js';
 
 @Module({
-  providers: [AuthService, JwtAuthGuard],
+  providers: [AuthService, JwtAuthGuard, RefreshSessionsService],
   imports: [
     TypeOrmModule.forFeature([RefreshSession]),
     UsersModule,

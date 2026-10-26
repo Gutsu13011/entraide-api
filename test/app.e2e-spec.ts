@@ -18,6 +18,10 @@ import { ServiceRequestMessage } from '../src/service-requests/service-request-m
 import { ServiceRequestMessageReminder } from '../src/service-requests/service-request-message-reminder.entity.js';
 import { ServiceRequestMessageReminderStatus as ReminderStatus } from '../src/service-requests/service-request-message-reminder-status.enum.js';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { RefreshSession } from '../src/auth/refresh-session.entity.js';
+import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
+import cookieParser from 'cookie-parser';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
@@ -59,6 +63,7 @@ describe('AppController (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    app.use(cookieParser());
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -1437,7 +1442,7 @@ describe('AppController (e2e)', () => {
     expect(passwordMatches).toBe(true);
   });
 
-  it('/auth/login (POST) returns a signed access token for valid credentials', async () => {
+  it('/auth/login (POST) returns only a signed access token and sets a persistent refresh cookie', async () => {
     const authRegisterMock = {
       firstName: 'Alice',
       lastName: 'Martin',
@@ -1458,6 +1463,31 @@ describe('AppController (e2e)', () => {
     const payload = await jwtService.verifyAsync<{ sub: string }>(response.body.accessToken);
 
     expect(payload.sub).toBe('1');
+    const lifetime = jwtService.decode<{ exp: number; iat: number }>(response.body.accessToken);
+    expect(lifetime.exp - lifetime.iat).toBe(15 * 60);
+
+    const cookies = response.headers['set-cookie'] as unknown as string[];
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0]).toContain('; HttpOnly');
+    expect(cookies[0]).toContain('; SameSite=Lax');
+    expect(cookies[0]).toContain('; Path=/auth');
+    expect(cookies[0]).not.toContain('; Secure');
+    expect(cookies[0]).not.toContain('Domain=');
+    const secret = decodeURIComponent(cookies[0].split(';')[0].slice('refresh_token='.length));
+    expect(cookies[0]).toMatch(/^refresh_token=/);
+    expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const sessions = app.get<Repository<RefreshSession>>(getRepositoryToken(RefreshSession));
+    expect(await sessions.count()).toBe(1);
+    const saved = await sessions.findOneByOrFail({
+      tokenHash: createHash('sha256').update(secret).digest('hex'),
+    });
+    expect(saved.userId).toBe(1);
+    expect(saved.revokedAt).toBeNull();
+    expect(saved.tokenHash).toBeUndefined();
+    const cookieExpiry = cookies[0].match(/Expires=([^;]+)/)?.[1];
+    expect(cookieExpiry).toBe(saved.expiresAt.toUTCString());
+    const ttlDays = app.get(ConfigService).getOrThrow<number>('REFRESH_SESSION_TTL_DAYS');
+    expect(saved.expiresAt.getTime() - Date.now()).toBeCloseTo(ttlDays * 86400000, -4);
   });
 
   it('/auth/login (POST) rejects an incorrect password', async () => {
@@ -1475,7 +1505,10 @@ describe('AppController (e2e)', () => {
       .expect(401)
       .expect((response) => {
         expect(response.body.message).toBe('Invalid credentials');
+        expect(response.headers['set-cookie']).toBeUndefined();
       });
+    const sessions = app.get<Repository<RefreshSession>>(getRepositoryToken(RefreshSession));
+    expect(await sessions.count()).toBe(0);
   });
 
   it('/auth/login (POST) rejects an incorrect email', async () => {
@@ -1493,7 +1526,88 @@ describe('AppController (e2e)', () => {
       .expect(401)
       .expect((response) => {
         expect(response.body.message).toBe('Invalid credentials');
+        expect(response.headers['set-cookie']).toBeUndefined();
       });
+    const sessions = app.get<Repository<RefreshSession>>(getRepositoryToken(RefreshSession));
+    expect(await sessions.count()).toBe(0);
+  });
+
+  describe('Refresh-cookie issuance', () => {
+    const credentials = {
+      email: 'cookie@example.test',
+      password: 'test-only-password-long-enough',
+    };
+
+    beforeEach(async () => {
+      await request(app.getHttpServer())
+        .post('/auth/register')
+        .send({
+          firstName: 'Alice',
+          lastName: 'Martin',
+          ...credentials,
+        })
+        .expect(201);
+    });
+
+    it('/auth/login (POST) creates independent refresh sessions for repeated logins', async () => {
+      const first = await request(app.getHttpServer())
+        .post('/auth/login')
+        .send(credentials)
+        .expect(200);
+      const second = await request(app.getHttpServer())
+        .post('/auth/login')
+        .send(credentials)
+        .expect(200);
+      const firstCookie = (first.headers['set-cookie'] as unknown as string[])[0].split(';')[0];
+      const secondCookie = (second.headers['set-cookie'] as unknown as string[])[0].split(';')[0];
+      expect(firstCookie).not.toBe(secondCookie);
+      const sessions = app.get<Repository<RefreshSession>>(getRepositoryToken(RefreshSession));
+      expect(await sessions.countBy({ userId: 1 })).toBe(2);
+    });
+
+    it.each([
+      { email: credentials.email },
+      { ...credentials, email: 'invalid-email' },
+      { ...credentials, userId: 999 },
+    ])(
+      '/auth/login (POST) rejects invalid login data without issuing a cookie or session: %j',
+      async (body) => {
+        const response = await request(app.getHttpServer())
+          .post('/auth/login')
+          .send(body)
+          .expect(400);
+        expect(response.headers['set-cookie']).toBeUndefined();
+        const sessions = app.get<Repository<RefreshSession>>(getRepositoryToken(RefreshSession));
+        expect(await sessions.count()).toBe(0);
+      },
+    );
+
+    it('/auth/login (POST) returns no cookie or token when session persistence fails', async () => {
+      const sessions = app.get<Repository<RefreshSession>>(getRepositoryToken(RefreshSession));
+      const save = vi
+        .spyOn(sessions, 'save')
+        .mockRejectedValueOnce(new Error('Session database unavailable'));
+      try {
+        const response = await request(app.getHttpServer())
+          .post('/auth/login')
+          .send(credentials)
+          .expect(500);
+        expect(response.headers['set-cookie']).toBeUndefined();
+        expect(response.body).toEqual({ statusCode: 500, message: 'Internal server error' });
+        expect(await sessions.count()).toBe(0);
+      } finally {
+        save.mockRestore();
+      }
+    });
+
+    it('/auth/me (GET) does not accept a refresh cookie in place of a bearer access token', async () => {
+      const login = await request(app.getHttpServer())
+        .post('/auth/login')
+        .send(credentials)
+        .expect(200);
+      const cookie = (login.headers['set-cookie'] as unknown as string[])[0].split(';')[0];
+      await request(app.getHttpServer()).get('/auth/me').set('Cookie', cookie).expect(401);
+    });
   });
 
   it('/auth/me (GET) should reject requests without a bearer token', async () => {

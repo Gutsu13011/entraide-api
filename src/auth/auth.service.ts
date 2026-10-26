@@ -5,12 +5,14 @@ import argon2 from 'argon2';
 import { LoginDto } from './dto/login.dto.js';
 import { JwtService } from '@nestjs/jwt';
 import { CurrentUserDto } from './dto/current-user.dto.js';
+import { RefreshSessionsService } from './refresh-sessions.service.js';
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
+    private readonly refreshSessionsService: RefreshSessionsService,
   ) {}
 
   async register(registerDto: RegisterDto): Promise<void> {
@@ -46,11 +48,14 @@ export class AuthService {
     return { id: user.id, email: user.email };
   }
 
-  async login(loginDto: LoginDto): Promise<{ accessToken: string }> {
+  async login(
+    loginDto: LoginDto,
+  ): Promise<{ accessToken: string; refreshToken: string; expiresAt: Date }> {
     const userValidated = await this.validateCredentials(loginDto);
     const accessToken = await this.jwtService.signAsync({ sub: String(userValidated.id) });
+    const sessions = await this.refreshSessionsService.create(userValidated.id);
 
-    return { accessToken };
+    return { accessToken, refreshToken: sessions.refreshToken, expiresAt: sessions.expiresAt };
   }
 
   async getCurrentUser(id: number): Promise<CurrentUserDto> {
@@ -61,5 +66,12 @@ export class AuthService {
     }
 
     return { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email };
+  }
+
+  async refresh(refreshToken: string): Promise<{ accessToken: string }> {
+    const session = await this.refreshSessionsService.findValid(refreshToken);
+    const accessToken = await this.jwtService.signAsync({ sub: String(session.userId) });
+
+    return { accessToken };
   }
 }

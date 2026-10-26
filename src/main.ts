@@ -4,6 +4,7 @@ import { AppModule } from './app.module.js';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -11,6 +12,7 @@ async function bootstrap() {
   app.enableCors({ origin: 'http://localhost:4200' });
   app.enableShutdownHooks();
   app.use(helmet({ contentSecurityPolicy: false }));
+  app.use(cookieParser());
 
   const configService = app.get(ConfigService);
   const port = configService.getOrThrow<number>('PORT');

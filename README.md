@@ -102,8 +102,9 @@ The Angular frontend sends access tokens with authenticated API requests.
 ## Authentication
 
 - `POST /auth/register` creates a user.
-- `POST /auth/login` returns an `accessToken`.
+- `POST /auth/login` returns an `accessToken` and sets a persistent HttpOnly refresh cookie.
 - `GET /auth/me` returns the authenticated user's public profile.
+- `POST /auth/refresh` renews an access token from the refresh cookie.
 
 Send `Authorization: Bearer <accessToken>` when calling protected endpoints.
 In Swagger UI, use the **Authorize** button with the token returned by login.
@@ -143,9 +144,51 @@ are preserved. Reverting this migration removes refresh-session records only.
 The entity is registered for both Nest repository injection and the TypeORM CLI,
 and the migration is included in the E2E database initialization.
 
-Persistent sign-in is not yet connected: login still issues the existing
-15-minute access token. Token issuance, refresh cookies, renewal, logout
-revocation and Angular session restoration will follow this storage step.
+`RefreshSessionsService.create(userId)` generates a 32-byte random secret encoded
+as base64url. It persists only the SHA-256 hash, the owning user and the expiry,
+then returns the secret and expiry to its internal caller after saving succeeds.
+`REFRESH_SESSION_TTL_DAYS` configures the lifetime in days (default: 7). A new
+session is created for each call; existing sessions remain unchanged.
+
+`RefreshSessionsService.findValid(secret)` hashes the supplied secret and looks
+up a session with the matching hash, no revocation date, and an expiration
+strictly after the current time. Unknown, expired or revoked sessions return
+`401 Unauthorized` with the same error message. Validation does not extend the
+lifetime, rotate the secret, or create another session. Database errors propagate
+rather than being treated as invalid credentials.
+
+`AuthService.refresh(secret)` validates the existing session and signs an access
+token with the session owner's `userId` as its subject. It returns only the new
+access token and does not create a session or extend its expiration. A validation
+or signing failure aborts renewal.
+
+After validating credentials, login issues the existing 15-minute access token
+and creates a refresh session for the verified account. The controller returns
+only `accessToken` in JSON and sends the raw refresh secret in a `refresh_token`
+cookie with `HttpOnly`, `SameSite=Lax`, `Path=/auth`, and the session expiration.
+The cookie is host-only and uses `Secure` in production (HTTPS is required).
+The Express bootstrap registers `cookie-parser` to make incoming cookies
+available as `request.cookies`; the E2E HTTP application uses the same parser.
+Parsing a cookie does not validate the refresh secret or authenticate its owner.
+Each successful login creates a separate session. Invalid credentials or a failed
+session save issue no refresh cookie; a failed session save also fails login.
+
+`POST /auth/refresh` returns `{ accessToken }` with status 200 after validating
+`refresh_token` from the cookie. It requires an exact `Origin` of
+`http://localhost:4200` (Angular) or `http://localhost:3000` (local API/Swagger).
+These are the currently supported local origins. Missing, `null`, or different
+origins return 403 before cookie validation. Missing or non-string cookie values,
+and unknown, expired or revoked sessions, return 401. Body fields and bearer
+access tokens are not used as refresh credentials. An expired access token does
+not prevent renewal with a valid refresh cookie. The response issues no new
+refresh cookie and leaves the existing session expiration unchanged; concurrent
+renewals may share the same session.
+
+The origin check complements session authentication to protect this
+cookie-authenticated route against CSRF. HttpOnly prevents JavaScript from
+reading the cookie; it does not by itself provide CSRF protection.
+Persistent sign-in is not yet complete: logout revocation, credentialed browser
+requests and Angular session restoration will follow.
 
 ### Provider ownership
 

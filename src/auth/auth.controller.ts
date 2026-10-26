@@ -1,4 +1,15 @@
-import { Body, Controller, Get, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  HttpCode,
+  Post,
+  Req,
+  Res,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthService } from './auth.service.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { LoginDto } from './dto/login.dto.js';
@@ -7,6 +18,7 @@ import {
   ApiBearerAuth,
   ApiConflictResponse,
   ApiCreatedResponse,
+  ApiForbiddenResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
@@ -14,12 +26,16 @@ import {
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { CurrentUserDto } from './dto/current-user.dto.js';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
+import { ConfigService } from '@nestjs/config';
 
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly configService: ConfigService,
+  ) {}
 
   @Post('register')
   @ApiOperation({ summary: 'Register a user' })
@@ -36,8 +52,21 @@ export class AuthController {
   @ApiOkResponse({ description: 'Access token issued' })
   @ApiBadRequestResponse({ description: 'Invalid login data' })
   @ApiUnauthorizedResponse({ description: 'Invalid credentials' })
-  login(@Body() loginDto: LoginDto): Promise<{ accessToken: string }> {
-    return this.authService.login(loginDto);
+  async login(
+    @Body() loginDto: LoginDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<{ accessToken: string }> {
+    const result = await this.authService.login(loginDto);
+
+    response.cookie('refresh_token', result.refreshToken, {
+      httpOnly: true,
+      secure: this.configService.getOrThrow<string>('NODE_ENV') === 'production',
+      sameSite: 'lax',
+      path: '/auth',
+      expires: result.expiresAt,
+    });
+
+    return { accessToken: result.accessToken };
   }
 
   @Get('me')
@@ -53,5 +82,29 @@ export class AuthController {
   })
   me(@Req() request: Request & { user: { id: number } }): Promise<CurrentUserDto> {
     return this.authService.getCurrentUser(request.user.id);
+  }
+
+  @Post('refresh')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Renew the access token using the refresh cookie' })
+  @ApiOkResponse({ description: 'Access token renewed' })
+  @ApiForbiddenResponse({ description: 'Untrusted request origin' })
+  @ApiUnauthorizedResponse({
+    description: 'Missing, invalid, expired or revoked refresh session',
+  })
+  refresh(@Req() request: Request): Promise<{ accessToken: string }> {
+    const origin = request.get('origin');
+
+    if (origin !== 'http://localhost:4200' && origin !== 'http://localhost:3000') {
+      throw new ForbiddenException('Untrusted request origin');
+    }
+
+    const refreshToken: unknown = request.cookies?.refresh_token;
+
+    if (typeof refreshToken !== 'string' || refreshToken.length === 0) {
+      throw new UnauthorizedException('Invalid refresh session');
+    }
+
+    return this.authService.refresh(refreshToken);
   }
 }

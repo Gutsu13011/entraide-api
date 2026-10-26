@@ -58,6 +58,7 @@ const testMigrations = [
           .email({ tlds: { allow: false } })
           .default('no-reply@entraide.test'),
         MESSAGE_REMINDERS_ENABLED: Joi.boolean().default(false),
+        REFRESH_SESSION_TTL_DAYS: Joi.number().integer().positive().default(7),
       }),
     }),
     ScheduleModule.forRootAsync({
