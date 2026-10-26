@@ -9,6 +9,7 @@ import { AuthModule } from '../auth/auth.module.js';
 import { ServiceRequestMessage } from './service-request-message.entity.js';
 import { ServiceRequestMessageReminder } from './service-request-message-reminder.entity.js';
 import { ServiceRequestMessageRemindersService } from './service-request-message-reminders.service.js';
+import { MailModule } from '../mail/mail.module.js';
 
 @Module({
   providers: [ServiceRequestsService, ServiceRequestMessageRemindersService],
@@ -22,6 +23,7 @@ import { ServiceRequestMessageRemindersService } from './service-request-message
     ]),
     ServiceProvidersModule,
     AuthModule,
+    MailModule,
   ],
 })
 export class ServiceRequestsModule {}

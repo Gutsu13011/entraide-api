@@ -48,6 +48,12 @@ const testMigrations = [
         DATABASE_PATH: Joi.string().min(1).default('entraide.sqlite'),
         NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
         JWT_SECRET: Joi.string().min(32).required(),
+        SMTP_HOST: Joi.string().trim().min(1).default('127.0.0.1'),
+        SMTP_PORT: Joi.number().integer().min(1).max(65535).default(1025),
+        SMTP_SECURE: Joi.boolean().default(false),
+        MAIL_FROM: Joi.string()
+          .email({ tlds: { allow: false } })
+          .default('no-reply@entraide.test'),
       }),
     }),
     TypeOrmModule.forRootAsync({

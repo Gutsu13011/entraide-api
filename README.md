@@ -23,6 +23,7 @@ service.
 - Unit and end-to-end tests
 - GitHub Actions workflow for automated checks
 - Authentication and user accounts
+- Plain-text SMTP email delivery with Nodemailer and a local Mailpit inbox
 - One provider profile per account, with owner-only profile management and offering creation, updates and deletion
 
 ## Project status
@@ -35,7 +36,9 @@ creation, private sent and received lists, and recipient-only status updates
 are available. Recipients can mark a request as read, accept it or reject it,
 and mark an accepted request as completed. Requesters can review completed
 services, with one review per request and a public response that excludes
-private request links. Reply messages are planned.
+private request links. Private reply messages, read receipts and unread counts
+are available to request participants. SMTP email delivery is implemented for
+local testing; automatic unread-message reminders are still being connected.
 The current version is intended for local development and demonstration.
 
 ## Requirements
@@ -417,9 +420,50 @@ The initial service request text and previously stored replies are not
 backfilled. Reading all received replies cancels the corresponding pending
 reminder transactionally. A subsequent reply starts a new five-minute delay
 with a new pending reminder, preserving the cancelled record. Scheduled
-processing and email transport will be connected in later steps. No emails
-are sent at this stage. Apply the reminder-table migration before using
-message submission against an existing local database.
+processing and automatic reminder delivery will be connected in later steps.
+No automatic reminder emails are sent at this stage. Apply the reminder-table
+migration before using message submission against an existing local database.
+
+## Local email delivery
+
+`MailModule` exports `MailService` for importing modules. `sendText(to, subject,
+text)` sends one plain-text email with the configured sender and the display
+name `Entraide`. It preserves Unicode and line breaks and resolves without a
+return value only after SMTP acceptance. A connection error, a rejected
+recipient or an unexpected acceptance result rejects the operation. The caller
+chooses whether and when to retry; the service does not retry automatically.
+SMTP acceptance means the server accepted the message, not that a person read it.
+
+The service creates one reusable Nodemailer transporter. Creating the service
+does not send a message or require Mailpit to be running; sending requires the
+configured SMTP server. Tests mock SMTP and do not depend on the local inbox.
+
+The validated environment variables and local defaults are:
+
+| Variable      | Default                  | Meaning                               |
+| ------------- | ------------------------ | ------------------------------------- |
+| `SMTP_HOST`   | `127.0.0.1`              | SMTP server host                      |
+| `SMTP_PORT`   | `1025`                   | SMTP port, an integer from 1 to 65535 |
+| `SMTP_SECURE` | `false`                  | Use TLS immediately when connecting   |
+| `MAIL_FROM`   | `no-reply@entraide.test` | Sender email address                  |
+
+Joi converts the SMTP port and secure flag from environment strings to a number
+and boolean. Invalid values fail configuration validation. The sender validator
+accepts the development `.test` domain. Keep your existing `.env` values when
+updating the project; `.env.example` documents these settings.
+
+On macOS, install and run Mailpit in a separate terminal:
+
+```bash
+brew install mailpit &&
+mailpit --listen 127.0.0.1:8025 --smtp 127.0.0.1:1025
+```
+
+Keep that terminal running while testing SMTP. Open http://127.0.0.1:8025 to
+inspect received messages. With this local setup, Mailpit captures emails for
+development. The default temporary inbox is removed when Mailpit exits.
+Nodemailer 10 includes its TypeScript declarations; no separate
+`@types/nodemailer` package is needed.
 
 ## Reviews
 
