@@ -38,7 +38,7 @@ and mark an accepted request as completed. Requesters can review completed
 services, with one review per request and a public response that excludes
 private request links. Private reply messages, read receipts and unread counts
 are available to request participants. SMTP email delivery is implemented for
-local testing; automatic unread-message reminders are still being connected.
+local testing; unread-message email reminders can be enabled through configuration.
 The current version is intended for local development and demonstration.
 
 ## Requirements
@@ -424,8 +424,8 @@ password hashes or internal entity fields are included in the email object.
 Reload or commit failures propagate without returning a prepared email.
 
 Preparation does not send SMTP, mark messages as read or reserve a reminder:
-repeated calls can return the same eligible reminder and email. Scheduling and
-automatic reminder delivery are not yet connected.
+repeated calls can return the same eligible reminder and email. The scheduled job
+uses the send method below to deliver eligible reminders.
 
 `sendReminder(id, now)` prepares the email, waits for SMTP acceptance, then
 records `SENT` and a server-generated `sentAt` timestamp taken after confirmation.
@@ -441,15 +441,42 @@ SMTP acceptance and the database update are separate operations: a failed
 recording cannot undo an accepted email, and an explicit retry can send it again.
 If reading cancels a reminder while SMTP is in progress, successful acceptance
 is recorded on that exact reminder; a newer pending reminder remains unchanged.
-No scheduled worker calls this method yet.
+`ServiceRequestMessageRemindersJob` calls this method once per selected reminder
+when automatic reminders are enabled.
 
 The initial service request text and previously stored replies are not
 backfilled. Reading all received replies cancels the corresponding pending
 reminder transactionally. A subsequent reply starts a new five-minute delay
-with a new pending reminder, preserving the cancelled record. Scheduled
-processing and automatic reminder delivery will be connected in later steps.
-No automatic reminder emails are sent at this stage. Apply the reminder-table
-migration before using message submission against an existing local database.
+with a new pending reminder, preserving the cancelled record. Apply the
+reminder-table migration before using message submission against an existing
+local database.
+
+### Scheduled reminder processing
+
+The root `ScheduleModule` registers the named `service-request-message-reminders`
+cron job outside the test environment. It runs at the start of each minute and
+checks the validated `MESSAGE_REMINDERS_ENABLED` boolean before querying data.
+The default is `false`. With `true`, each run selects at most 50 due reminders
+and awaits each send in order. A failed reminder is logged with its id and does
+not prevent later reminders in the batch from being processed. Batch selection
+failures are logged by the scheduler; later scheduled ticks can try again.
+
+`waitForCompletion: true` skips scheduled ticks while the preceding run is still
+executing; it does not queue another overlapping batch. This applies within the
+running API instance. API processes do not share the scheduler or its send guard.
+The one-minute scan interval is separate from the five-minute minimum unread age.
+A reminder becomes a candidate at its due date and is considered at a later scan,
+subject to batch capacity and the duration of preceding runs.
+
+To try automatic reminders locally, keep Mailpit running, set
+`MESSAGE_REMINDERS_ENABLED=true` in `.env`, and restart the API. The flag is checked
+at the start of each batch. Existing pending reminders can then be processed.
+Set the flag back to `false` and restart to disable future batches.
+
+In `NODE_ENV=test`, automatic cron registration is disabled even if the reminder
+flag is true. Tests exercise job logic directly and use an isolated scheduler
+with simulated timers to verify frequency, recovery and overlap prevention.
+SMTP is mocked during automated tests.
 
 ## Local email delivery
 

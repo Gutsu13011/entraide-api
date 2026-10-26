@@ -25,6 +25,7 @@ import { AddServiceRequestProvider1792423748325 } from './database/migrations/17
 import { LinkReviewsToServiceRequests1792425147989 } from './database/migrations/1792425147989-LinkReviewsToServiceRequests.js';
 import { CreateServiceRequestMessagesTable1792655516545 } from './database/migrations/1792655516545-CreateServiceRequestMessagesTable.js';
 import { CreateServiceRequestMessageRemindersTable1792945282224 } from './database/migrations/1792945282224-CreateServiceRequestMessageRemindersTable.js';
+import { ScheduleModule } from '@nestjs/schedule';
 
 const testMigrations = [
   InitialSchema1789026143459,
@@ -54,6 +55,13 @@ const testMigrations = [
         MAIL_FROM: Joi.string()
           .email({ tlds: { allow: false } })
           .default('no-reply@entraide.test'),
+        MESSAGE_REMINDERS_ENABLED: Joi.boolean().default(false),
+      }),
+    }),
+    ScheduleModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (conifgService: ConfigService) => ({
+        cronJobs: conifgService.getOrThrow<string>('NODE_ENV') !== 'test',
       }),
     }),
     TypeOrmModule.forRootAsync({

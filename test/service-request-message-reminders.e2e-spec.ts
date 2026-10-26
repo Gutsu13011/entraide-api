@@ -13,6 +13,9 @@ import { ServiceRequestMessageReminderStatus as ReminderStatus } from '../src/se
 import { ServiceRequestMessageRemindersService } from '../src/service-requests/service-request-message-reminders.service.js';
 import { MailService } from '../src/mail/mail.service.js';
 import { ServiceRequestsService } from '../src/service-requests/service-requests.service.js';
+import { ServiceRequestMessageRemindersJob } from '../src/service-requests/service-request-message-reminders.job.js';
+import { SchedulerRegistry } from '@nestjs/schedule';
+import { ConfigService } from '@nestjs/config';
 
 describe('ServiceRequestMessageRemindersService (database integration)', () => {
   let app: INestApplication;
@@ -83,6 +86,16 @@ describe('ServiceRequestMessageRemindersService (database integration)', () => {
       })),
     );
   }
+
+  it('should register the reminder job provider but disable automatic cron registration in the test environment', () => {
+    const config = app.get(ConfigService);
+    expect(config.getOrThrow<string>('NODE_ENV')).toBe('test');
+    expect(typeof config.getOrThrow<boolean>('MESSAGE_REMINDERS_ENABLED')).toBe('boolean');
+    expect(app.get(ServiceRequestMessageRemindersJob)).toBeInstanceOf(
+      ServiceRequestMessageRemindersJob,
+    );
+    expect(app.get(SchedulerRegistry).getCronJobs().size).toBe(0);
+  });
 
   it('should resolve the registered service and return an empty list without reminders', async () => {
     await expect(service.findDueReminders(now)).resolves.toEqual([]);

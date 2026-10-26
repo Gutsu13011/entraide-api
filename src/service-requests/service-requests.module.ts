@@ -10,9 +10,14 @@ import { ServiceRequestMessage } from './service-request-message.entity.js';
 import { ServiceRequestMessageReminder } from './service-request-message-reminder.entity.js';
 import { ServiceRequestMessageRemindersService } from './service-request-message-reminders.service.js';
 import { MailModule } from '../mail/mail.module.js';
+import { ServiceRequestMessageRemindersJob } from './service-request-message-reminders.job.js';
 
 @Module({
-  providers: [ServiceRequestsService, ServiceRequestMessageRemindersService],
+  providers: [
+    ServiceRequestsService,
+    ServiceRequestMessageRemindersService,
+    ServiceRequestMessageRemindersJob,
+  ],
   controllers: [ServiceRequestsController],
   imports: [
     TypeOrmModule.forFeature([
