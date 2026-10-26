@@ -8,10 +8,11 @@ import { JwtAuthGuard } from './jwt-auth.guard.js';
 
 describe('AuthController', () => {
   let controller: AuthController;
-  const authServiceMock = { register: vi.fn(), login: vi.fn(), refresh: vi.fn() };
+  const authServiceMock = { register: vi.fn(), login: vi.fn(), refresh: vi.fn(), logout: vi.fn() };
   const config = { getOrThrow: vi.fn() };
   const cookie = vi.fn();
-  const response = { cookie } as unknown as Response;
+  const clearCookie = vi.fn();
+  const response = { cookie, clearCookie } as unknown as Response;
   const loginDto = { email: 'alice@example.test', password: 'test-only-password' };
   const loginResult = {
     accessToken: 'test-access-token',
@@ -140,6 +141,104 @@ describe('AuthController', () => {
         controller.refresh(incoming('http://localhost:4200', { refresh_token: secret })),
       ).rejects.toBe(error);
       expect(cookie).not.toHaveBeenCalled();
+    });
+  });
+  describe('logout', () => {
+    const secret = 'test-only-refresh-secret';
+    function incoming(origin: string | undefined, cookies?: Record<string, unknown>): Request {
+      return { get: vi.fn().mockReturnValue(origin), cookies } as unknown as Request;
+    }
+
+    it.each([
+      { environment: 'development', origin: 'http://localhost:4200' },
+      { environment: 'test', origin: 'http://localhost:3000' },
+      { environment: 'production', origin: 'http://localhost:4200' },
+    ])(
+      'should revoke the session and clear the matching cookie in $environment',
+      async ({ environment, origin }) => {
+        config.getOrThrow.mockReturnValue(environment);
+        authServiceMock.logout.mockResolvedValue(undefined);
+
+        await expect(
+          controller.logout(incoming(origin, { refresh_token: secret }), response),
+        ).resolves.toBeUndefined();
+
+        expect(authServiceMock.logout).toHaveBeenCalledExactlyOnceWith(secret);
+        expect(clearCookie).toHaveBeenCalledExactlyOnceWith('refresh_token', {
+          httpOnly: true,
+          secure: environment === 'production',
+          sameSite: 'lax',
+          path: '/auth',
+        });
+        expect(cookie).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      undefined,
+      'null',
+      'https://evil.example',
+      'http://localhost.evil.example:4200',
+      'http://localhost:4201',
+      'https://localhost:4200',
+      'http://localhost:4200/',
+    ])(
+      'should reject an untrusted origin without revoking or clearing the cookie: %s',
+      async (origin) => {
+        await expect(
+          controller.logout(incoming(origin, { refresh_token: secret }), response),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(authServiceMock.logout).not.toHaveBeenCalled();
+        expect(clearCookie).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      undefined,
+      {},
+      { refresh_token: '' },
+      { refresh_token: null },
+      { refresh_token: 123 },
+      { refresh_token: { value: secret } },
+      { refresh_token: [secret] },
+    ])(
+      'should clear an absent or malformed cookie without trying to revoke a session: %j',
+      async (cookies) => {
+        await expect(
+          controller.logout(incoming('http://localhost:4200', cookies), response),
+        ).resolves.toBeUndefined();
+        expect(authServiceMock.logout).not.toHaveBeenCalled();
+        expect(clearCookie).toHaveBeenCalledOnce();
+      },
+    );
+
+    it('should propagate a revocation failure without clearing the cookie', async () => {
+      const error = new Error('Session revocation unavailable');
+      authServiceMock.logout.mockRejectedValueOnce(error);
+
+      await expect(
+        controller.logout(incoming('http://localhost:4200', { refresh_token: secret }), response),
+      ).rejects.toBe(error);
+      expect(clearCookie).not.toHaveBeenCalled();
+    });
+
+    it('should wait for revocation to finish before clearing the cookie', async () => {
+      let finish!: () => void;
+      authServiceMock.logout.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const pending = controller.logout(
+        incoming('http://localhost:4200', { refresh_token: secret }),
+        response,
+      );
+      expect(authServiceMock.logout).toHaveBeenCalledOnce();
+      expect(clearCookie).not.toHaveBeenCalled();
+
+      finish();
+      await expect(pending).resolves.toBeUndefined();
+      expect(clearCookie).toHaveBeenCalledOnce();
     });
   });
 });

@@ -44,4 +44,13 @@ export class RefreshSessionsService {
 
     return session;
   }
+
+  async revoke(refreshToken: string): Promise<void> {
+    const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
+
+    await this.refreshSessionRepository.update(
+      { tokenHash, revokedAt: IsNull() },
+      { revokedAt: new Date() },
+    );
+  }
 }

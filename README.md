@@ -105,6 +105,7 @@ The Angular frontend sends access tokens with authenticated API requests.
 - `POST /auth/login` returns an `accessToken` and sets a persistent HttpOnly refresh cookie.
 - `GET /auth/me` returns the authenticated user's public profile.
 - `POST /auth/refresh` renews an access token from the refresh cookie.
+- `POST /auth/logout` revokes the current refresh session and clears its cookie.
 
 Send `Authorization: Bearer <accessToken>` when calling protected endpoints.
 In Swagger UI, use the **Authorize** button with the token returned by login.
@@ -157,6 +158,12 @@ strictly after the current time. Unknown, expired or revoked sessions return
 lifetime, rotate the secret, or create another session. Database errors propagate
 rather than being treated as invalid credentials.
 
+`RefreshSessionsService.revoke(secret)` hashes the secret and sets `revokedAt`
+only for its matching, non-revoked session. It preserves other sessions, users,
+and the original expiration. Repeated revocation preserves the first timestamp;
+unknown secrets make no changes. Expired sessions may also be revoked. Database
+write failures propagate.
+
 `AuthService.refresh(secret)` validates the existing session and signs an access
 token with the session owner's `userId` as its subject. It returns only the new
 access token and does not create a session or extend its expiration. A validation
@@ -187,8 +194,25 @@ renewals may share the same session.
 The origin check complements session authentication to protect this
 cookie-authenticated route against CSRF. HttpOnly prevents JavaScript from
 reading the cookie; it does not by itself provide CSRF protection.
-Persistent sign-in is not yet complete: logout revocation, credentialed browser
-requests and Angular session restoration will follow.
+
+`POST /auth/logout` applies the same exact-origin check as renewal. For a
+non-empty string refresh cookie, it awaits session revocation before clearing
+`refresh_token` with the login cookie options (including `Path=/auth`, excluding
+its previous expiration), then returns 204 with no body. Repeated logout and
+missing, malformed, unknown, expired or already revoked cookies also return 204
+and clear the cookie. Body fields and bearer tokens are not logout credentials.
+An untrusted origin returns 403 without clearing or revoking anything. A database
+write failure returns 500 without clearing the cookie, allowing an explicit retry.
+Only the selected refresh session is revoked; other sessions remain active.
+Already issued access JWTs remain valid until their normal 15-minute expiration.
+
+The HTTP bootstrap enables credentialed CORS for `http://localhost:4200` using
+`credentials: true`. Angular authentication requests will also need
+`withCredentials: true` to exchange refresh cookies. The explicit origin checks
+on refresh and logout still run on the server.
+
+Persistent sign-in is not yet complete: Angular cookie transport and session
+restoration will follow.
 
 ### Provider ownership
 

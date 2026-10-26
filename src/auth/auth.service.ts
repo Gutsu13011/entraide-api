@@ -74,4 +74,8 @@ export class AuthService {
 
     return { accessToken };
   }
+
+  logout(refreshToken: string): Promise<void> {
+    return this.refreshSessionsService.revoke(refreshToken);
+  }
 }

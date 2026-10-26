@@ -19,6 +19,7 @@ import {
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
+  ApiNoContentResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
@@ -106,5 +107,34 @@ export class AuthController {
     }
 
     return this.authService.refresh(refreshToken);
+  }
+
+  @Post('logout')
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Sign out of the current refresh session' })
+  @ApiNoContentResponse({ description: 'Signed out successfully' })
+  @ApiForbiddenResponse({ description: 'Untrusted request origin' })
+  async logout(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<void> {
+    const origin = request.get('origin');
+
+    if (origin !== 'http://localhost:4200' && origin !== 'http://localhost:3000') {
+      throw new ForbiddenException('Untrusted request origin');
+    }
+
+    const refreshToken: unknown = request.cookies?.refresh_token;
+
+    if (typeof refreshToken === 'string' && refreshToken.length > 0) {
+      await this.authService.logout(refreshToken);
+    }
+
+    response.clearCookie('refresh_token', {
+      httpOnly: true,
+      secure: this.configService.getOrThrow<string>('NODE_ENV') === 'production',
+      sameSite: 'lax',
+      path: '/auth',
+    });
   }
 }

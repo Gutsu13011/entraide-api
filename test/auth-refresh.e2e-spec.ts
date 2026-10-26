@@ -229,4 +229,183 @@ describe('Refresh-token renewal (e2e)', () => {
     expect(response.headers['set-cookie']).toBeUndefined();
     expect(await snapshot()).toEqual(before);
   });
+  describe('Logout', () => {
+    function logout(origin = 'http://localhost:4200') {
+      return request(app.getHttpServer())
+        .post('/auth/logout')
+        .set('Origin', origin)
+        .set('Cookie', cookie);
+    }
+
+    function expectCleared(response: { text: string; headers: Record<string, unknown> }) {
+      expect(response.text).toBe('');
+      const cookies = response.headers['set-cookie'] as string[];
+      expect(cookies).toHaveLength(1);
+      expect(cookies[0]).toMatch(/^refresh_token=;/);
+      expect(cookies[0]).toContain('; Path=/auth');
+      expect(cookies[0]).toContain('; HttpOnly');
+      expect(cookies[0]).toContain('; SameSite=Lax');
+      expect(cookies[0]).not.toContain('; Secure');
+      expect(cookies[0]).not.toContain('Domain=');
+      const expires = cookies[0].match(/Expires=([^;]+)/)?.[1];
+      expect(expires).toBeDefined();
+      expect(new Date(expires!).getTime()).toBeLessThan(Date.now());
+    }
+
+    it.each(['http://localhost:4200', 'http://localhost:3000'])(
+      '/auth/logout (POST) revokes the current session and removes its client cookie from %s',
+      async (origin) => {
+        const client = request.agent(app.getHttpServer());
+        const login = await client.post('/auth/login').send(credentials).expect(200);
+        const previousCookie = (login.headers['set-cookie'] as unknown as string[])[0].split(
+          ';',
+        )[0];
+        const previousSecret = decodeURIComponent(previousCookie.slice('refresh_token='.length));
+        const selected = await sessions.findOneByOrFail({
+          tokenHash: createHash('sha256').update(previousSecret).digest('hex'),
+        });
+        const before = await sessions.find({ order: { id: 'ASC' } });
+        const startedAt = Date.now();
+
+        const response = await client.post('/auth/logout').set('Origin', origin).expect(204);
+        expectCleared(response);
+        const revoked = await sessions.findOneByOrFail({ id: selected.id });
+        expect(revoked.revokedAt).toBeInstanceOf(Date);
+        expect(revoked.revokedAt!.getTime()).toBeGreaterThanOrEqual(startedAt);
+        expect(await sessions.find({ order: { id: 'ASC' } })).toEqual(
+          before.map((session) =>
+            session.id === selected.id ? { ...session, revokedAt: revoked.revokedAt } : session,
+          ),
+        );
+        // The HTTP client's cookie jar no longer sends the cleared cookie.
+        await client.post('/auth/refresh').set('Origin', origin).expect(401);
+        // Replaying a copy of the original cookie is also rejected by the server.
+        await request(app.getHttpServer())
+          .post('/auth/refresh')
+          .set('Origin', origin)
+          .set('Cookie', previousCookie)
+          .expect(401);
+        // Another login session for the same account remains usable.
+        await renew(origin).expect(200);
+        expect(await users.count()).toBe(1);
+        // Existing access JWTs remain valid until their normal expiration.
+        await request(app.getHttpServer())
+          .get('/auth/me')
+          .set('Authorization', `Bearer ${login.body.accessToken}`)
+          .expect(200);
+      },
+    );
+
+    it('/auth/logout (POST) allows repeated logout and preserves the first revocation timestamp', async () => {
+      expectCleared(await logout().expect(204));
+      const before = await snapshot();
+      expectCleared(await logout().expect(204));
+      expectCleared(
+        await request(app.getHttpServer())
+          .post('/auth/logout')
+          .set('Origin', 'http://localhost:4200')
+          .expect(204),
+      );
+      expect(await snapshot()).toEqual(before);
+      await renew().expect(401);
+    });
+
+    it.each(['missing', 'empty', 'unknown', 'JSON object', 'JSON array'])(
+      '/auth/logout (POST) clears an unusable cookie without revoking another session: %s',
+      async (kind) => {
+        const before = await snapshot();
+        const call = request(app.getHttpServer())
+          .post('/auth/logout')
+          .set('Origin', 'http://localhost:4200')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .send({ refreshToken: secret, userId: user.id });
+        if (kind !== 'missing') {
+          const value =
+            kind === 'empty'
+              ? ''
+              : kind === 'unknown'
+                ? 'unknown-test-secret'
+                : encodeURIComponent(
+                    `j:${JSON.stringify(kind === 'JSON object' ? { secret } : [secret])}`,
+                  );
+          call.set('Cookie', `refresh_token=${value}`);
+        }
+        expectCleared(await call.expect(204));
+        expect(await snapshot()).toEqual(before);
+        await renew().expect(200);
+      },
+    );
+
+    it.each([
+      { label: 'missing', origin: undefined },
+      { label: 'null', origin: 'null' },
+      { label: 'external host', origin: 'https://evil.example' },
+      { label: 'lookalike host', origin: 'http://localhost.evil.example:4200' },
+      { label: 'different port', origin: 'http://localhost:4201' },
+      { label: 'different scheme', origin: 'https://localhost:4200' },
+      { label: 'appended path', origin: 'http://localhost:4200/' },
+    ])(
+      '/auth/logout (POST) rejects an untrusted origin without clearing or revoking the session: $label',
+      async ({ origin }) => {
+        const before = await snapshot();
+        const call = request(app.getHttpServer()).post('/auth/logout').set('Cookie', cookie);
+        if (origin !== undefined) call.set('Origin', origin);
+        const response = await call.expect(403);
+        expect(response.body.message).toBe('Untrusted request origin');
+        expect(response.headers['set-cookie']).toBeUndefined();
+        expect(await snapshot()).toEqual(before);
+        await renew().expect(200);
+      },
+    );
+
+    it.each(['expired', 'revoked'])(
+      '/auth/logout (POST) clears the cookie for an already unusable session: %s',
+      async (kind) => {
+        const priorRevocation = new Date(Date.now() - 60000);
+        await sessions.update(
+          { tokenHash: cookieHash() },
+          kind === 'expired'
+            ? { expiresAt: new Date(Date.now() - 1) }
+            : { revokedAt: priorRevocation },
+        );
+        expectCleared(await logout().expect(204));
+        const stored = await sessions.findOneByOrFail({ tokenHash: cookieHash() });
+        expect(stored.revokedAt).toBeInstanceOf(Date);
+        if (kind === 'revoked') expect(stored.revokedAt).toEqual(priorRevocation);
+        await renew().expect(401);
+      },
+    );
+
+    it('/auth/logout (POST) works with an expired access token', async () => {
+      const expired = await app
+        .get(JwtService)
+        .signAsync({ sub: String(user.id) }, { expiresIn: -1 });
+      await request(app.getHttpServer())
+        .get('/auth/me')
+        .set('Authorization', `Bearer ${expired}`)
+        .expect(401);
+      expectCleared(await logout().set('Authorization', `Bearer ${expired}`).expect(204));
+      await renew().expect(401);
+    });
+
+    it('/auth/logout (POST) clears the cookie after its user has been deleted', async () => {
+      await users.delete({ id: user.id });
+      expectCleared(await logout().expect(204));
+      expect(await sessions.count()).toBe(0);
+    });
+
+    it('/auth/logout (POST) leaves the cookie and session usable when revocation fails and supports an explicit retry', async () => {
+      const before = await snapshot();
+      vi.spyOn(sessions, 'update').mockRejectedValueOnce(
+        new Error('Session revocation unavailable'),
+      );
+      const response = await logout().expect(500);
+      expect(response.body).toEqual({ statusCode: 500, message: 'Internal server error' });
+      expect(response.headers['set-cookie']).toBeUndefined();
+      expect(await snapshot()).toEqual(before);
+      await renew().expect(200);
+      expectCleared(await logout().expect(204));
+      await renew().expect(401);
+    });
+  });
 });

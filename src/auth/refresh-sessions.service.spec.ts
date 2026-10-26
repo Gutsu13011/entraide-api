@@ -243,4 +243,121 @@ describe('RefreshSessionsService', () => {
       await expect(service.findValid(issued.refreshToken)).rejects.toBe(error);
     });
   });
+  describe('revoke', () => {
+    it('should revoke only the matching session and leave other sessions and users unchanged', async () => {
+      const targeted = await service.create(user.id);
+      const sameUserSession = await service.create(user.id);
+      const users = module.get<Repository<User>>(getRepositoryToken(User));
+      const otherUser = await users.save({
+        firstName: 'Bruno',
+        lastName: 'Leroy',
+        email: 'bruno@example.test',
+        passwordHash: 'test-only-password-hash',
+      });
+      const otherUserSession = await service.create(otherUser.id);
+      const selected = await sessions.findOneByOrFail({ tokenHash: hash(targeted.refreshToken) });
+      const before = await sessions.find({ order: { id: 'ASC' } });
+
+      await expect(service.revoke(targeted.refreshToken)).resolves.toBeUndefined();
+
+      expect(await sessions.find({ order: { id: 'ASC' } })).toEqual(
+        before.map((session) =>
+          session.id === selected.id ? { ...session, revokedAt: now } : session,
+        ),
+      );
+      await expect(service.findValid(targeted.refreshToken)).rejects.toMatchObject({ status: 401 });
+      await expect(service.findValid(sameUserSession.refreshToken)).resolves.toMatchObject({
+        userId: user.id,
+      });
+      await expect(service.findValid(otherUserSession.refreshToken)).resolves.toMatchObject({
+        userId: otherUser.id,
+      });
+      expect(await users.count()).toBe(2);
+    });
+
+    it('should preserve the first revocation timestamp when revocation is repeated', async () => {
+      const issued = await service.create(user.id);
+      await service.revoke(issued.refreshToken);
+      const before: unknown = await sessions.query('SELECT * FROM refresh_sessions ORDER BY id');
+      vi.setSystemTime(new Date(now.getTime() + 60000));
+
+      await expect(service.revoke(issued.refreshToken)).resolves.toBeUndefined();
+
+      expect(await sessions.query('SELECT * FROM refresh_sessions ORDER BY id')).toEqual(before);
+    });
+
+    it.each(['unknown secret', 'empty secret', 'stored hash'])(
+      'should make no changes when revoking an unmatched secret: %s',
+      async (kind) => {
+        const issued = await service.create(user.id);
+        const invalid =
+          kind === 'empty secret'
+            ? ''
+            : kind === 'stored hash'
+              ? hash(issued.refreshToken)
+              : 'unknown-test-only-secret';
+        const before: unknown = await sessions.query('SELECT * FROM refresh_sessions ORDER BY id');
+
+        await expect(service.revoke(invalid)).resolves.toBeUndefined();
+
+        expect(await sessions.query('SELECT * FROM refresh_sessions ORDER BY id')).toEqual(before);
+        await expect(service.findValid(issued.refreshToken)).resolves.toMatchObject({
+          userId: user.id,
+        });
+      },
+    );
+
+    it('should also revoke an expired session without changing its expiry or deleting it', async () => {
+      const issued = await service.create(user.id);
+      const expiresAt = new Date(now.getTime() - 1);
+      await sessions.update({ tokenHash: hash(issued.refreshToken) }, { expiresAt });
+
+      await service.revoke(issued.refreshToken);
+
+      expect(
+        await sessions.findOneByOrFail({ tokenHash: hash(issued.refreshToken) }),
+      ).toMatchObject({ userId: user.id, expiresAt, revokedAt: now });
+      expect(await sessions.count()).toBe(1);
+    });
+
+    it('should propagate a database write failure and leave the session usable for an explicit retry', async () => {
+      const issued = await service.create(user.id);
+      const error = new Error('Session revocation unavailable');
+      vi.spyOn(sessions, 'update').mockRejectedValueOnce(error);
+
+      await expect(service.revoke(issued.refreshToken)).rejects.toBe(error);
+      await expect(service.findValid(issued.refreshToken)).resolves.toMatchObject({
+        revokedAt: null,
+      });
+      await expect(service.revoke(issued.refreshToken)).resolves.toBeUndefined();
+      await expect(service.findValid(issued.refreshToken)).rejects.toMatchObject({ status: 401 });
+    });
+
+    it('should wait for the database update before completing revocation', async () => {
+      const issued = await service.create(user.id);
+      const update = sessions.update.bind(sessions);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      vi.spyOn(sessions, 'update').mockImplementationOnce(async (criteria, values) => {
+        await gate;
+        return update(criteria, values);
+      });
+      const settled = vi.fn();
+      const pending = service.revoke(issued.refreshToken);
+      void pending.then(settled);
+      await Promise.resolve();
+      expect(settled).not.toHaveBeenCalled();
+      expect(
+        (await sessions.findOneByOrFail({ tokenHash: hash(issued.refreshToken) })).revokedAt,
+      ).toBeNull();
+
+      release();
+      await expect(pending).resolves.toBeUndefined();
+      expect(
+        (await sessions.findOneByOrFail({ tokenHash: hash(issued.refreshToken) })).revokedAt,
+      ).toEqual(now);
+    });
+  });
 });
