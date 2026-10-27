@@ -2,6 +2,7 @@ import { ConflictException, ForbiddenException, NotFoundException } from '@nestj
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ServiceRequestsService } from './service-requests.service.js';
+import { ServiceRequestMessagesGateway } from './service-request-messages.gateway.js';
 import { ServiceRequest } from './service-request.entity.js';
 import { ServiceRequestStatus } from './service-request-status.enum.js';
 import { ServiceOffering } from '../service-offerings/service-offering.entity.js';
@@ -39,6 +40,7 @@ describe('ServiceRequestsService', () => {
   };
   const offeringRepositoryMock = { findOneBy: vi.fn() };
   const providerServiceMock = { findOne: vi.fn() };
+  const messagesGatewayMock = { notifyConversationChanged: vi.fn() };
   const dto: CreateServiceRequestDto = { message: 'Bonjour, je souhaite repeindre ma chambre.' };
 
   beforeEach(async () => {
@@ -92,6 +94,7 @@ describe('ServiceRequestsService', () => {
         { provide: getRepositoryToken(ServiceOffering), useValue: offeringRepositoryMock },
         { provide: getRepositoryToken(ServiceRequestMessage), useValue: messageRepositoryMock },
         { provide: ServiceProvidersService, useValue: providerServiceMock },
+        { provide: ServiceRequestMessagesGateway, useValue: messagesGatewayMock },
       ],
     }).compile();
     service = module.get(ServiceRequestsService);
@@ -365,6 +368,7 @@ describe('ServiceRequestsService', () => {
     });
 
     function expectNoMessageWrite() {
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
       expect(messageRepositoryMock.manager.transaction).not.toHaveBeenCalled();
       expect(transactionMessageRepositoryMock.create).not.toHaveBeenCalled();
       expect(transactionMessageRepositoryMock.save).not.toHaveBeenCalled();
@@ -420,6 +424,12 @@ describe('ServiceRequestsService', () => {
       'should allow participant %s to save an unread message, reload its message id and return only safe response fields',
       async (userId) => {
         const result = await service.createMessage(42, { content }, userId);
+
+        expect(messagesGatewayMock.notifyConversationChanged).toHaveBeenCalledExactlyOnceWith(
+          42,
+          8,
+          7,
+        );
 
         expect(requestRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({ id: 42 });
         expect(messageRepositoryMock.manager.transaction).toHaveBeenCalledExactlyOnceWith(
@@ -507,6 +517,12 @@ describe('ServiceRequestsService', () => {
 
       const result = await service.createMessage(42, forgedDto, 8);
 
+      expect(messagesGatewayMock.notifyConversationChanged).toHaveBeenCalledExactlyOnceWith(
+        42,
+        8,
+        7,
+      );
+
       expect(transactionMessageRepositoryMock.create).toHaveBeenCalledExactlyOnceWith({
         content,
         serviceRequestId: 42,
@@ -533,6 +549,12 @@ describe('ServiceRequestsService', () => {
 
       const result = await service.createMessage(42, { content }, 7);
 
+      expect(messagesGatewayMock.notifyConversationChanged).toHaveBeenCalledExactlyOnceWith(
+        42,
+        8,
+        7,
+      );
+
       expect(result.serviceRequestId).toBe(42);
       expect(result.authorUserId).toBe(7);
       expect(result.author).toEqual(authors[7]);
@@ -547,6 +569,8 @@ describe('ServiceRequestsService', () => {
 
       await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
 
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
+
       expectNoMessageWrite();
     });
 
@@ -555,6 +579,8 @@ describe('ServiceRequestsService', () => {
       transactionMessageRepositoryMock.save.mockRejectedValue(error);
 
       await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
+
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
 
       expect(transactionMessageRepositoryMock.findOneOrFail).not.toHaveBeenCalled();
       expect(reminderQueryMock.execute).not.toHaveBeenCalled();
@@ -565,6 +591,8 @@ describe('ServiceRequestsService', () => {
       transactionMessageRepositoryMock.findOneOrFail.mockRejectedValue(error);
 
       await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
+
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
 
       expect(transactionMessageRepositoryMock.save).toHaveBeenCalledOnce();
     });
@@ -604,6 +632,7 @@ describe('ServiceRequestsService', () => {
       try {
         expect(transactionMessageRepositoryMock.save).toHaveBeenCalledOnce();
         expect(transactionMessageRepositoryMock.findOneOrFail).not.toHaveBeenCalled();
+        expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
       } finally {
         releaseInsertion();
       }
@@ -616,6 +645,8 @@ describe('ServiceRequestsService', () => {
 
       await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
 
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
+
       expect(transactionMessageRepositoryMock.save).toHaveBeenCalledOnce();
       expect(transactionMessageRepositoryMock.findOneOrFail).not.toHaveBeenCalled();
     });
@@ -625,6 +656,8 @@ describe('ServiceRequestsService', () => {
       messageRepositoryMock.manager.transaction.mockRejectedValue(error);
 
       await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
+
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
 
       expect(transactionManagerMock.getRepository).not.toHaveBeenCalled();
       expect(transactionMessageRepositoryMock.create).not.toHaveBeenCalled();
@@ -662,10 +695,16 @@ describe('ServiceRequestsService', () => {
         expect(transactionMessageRepositoryMock.save).toHaveBeenCalledOnce();
         expect(transactionMessageRepositoryMock.findOneOrFail).toHaveBeenCalledOnce();
         expect(settled).toBe(false);
+        expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
       } finally {
         releaseCommit();
       }
       await expect(response).resolves.toMatchObject({ id: 101, content, author: authors[8] });
+      expect(messagesGatewayMock.notifyConversationChanged).toHaveBeenCalledExactlyOnceWith(
+        42,
+        8,
+        7,
+      );
     });
 
     it('should propagate transaction validation failure after preparing the message response', async () => {
@@ -676,6 +715,8 @@ describe('ServiceRequestsService', () => {
       });
 
       await expect(service.createMessage(42, { content }, 8)).rejects.toBe(error);
+
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
 
       expect(transactionMessageRepositoryMock.save).toHaveBeenCalledOnce();
       expect(transactionMessageRepositoryMock.findOneOrFail).toHaveBeenCalledOnce();
@@ -932,6 +973,12 @@ describe('ServiceRequestsService', () => {
 
         await expect(service.markMessagesAsRead(42, dto, userId)).resolves.toBeUndefined();
 
+        expect(messagesGatewayMock.notifyConversationChanged).toHaveBeenCalledExactlyOnceWith(
+          42,
+          8,
+          7,
+        );
+
         expect(requestRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({ id: 42 });
         expect(transactionMessageRepositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({
           id: 102,
@@ -971,6 +1018,7 @@ describe('ServiceRequestsService', () => {
         new ForbiddenException('Only request participants can access this conversation'),
       );
       expect(messageRepositoryMock.manager.transaction).not.toHaveBeenCalled();
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
 
       expect(transactionMessageRepositoryMock.findOneBy).not.toHaveBeenCalled();
       expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
@@ -983,6 +1031,7 @@ describe('ServiceRequestsService', () => {
         new NotFoundException('Service request not found'),
       );
       expect(messageRepositoryMock.manager.transaction).not.toHaveBeenCalled();
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
 
       expect(transactionMessageRepositoryMock.findOneBy).not.toHaveBeenCalled();
       expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
@@ -1000,6 +1049,33 @@ describe('ServiceRequestsService', () => {
         serviceRequestId: 42,
       });
       expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, null])(
+      'should not notify when the update reports no affected count: %j',
+      async (affected) => {
+        transactionMessageRepositoryMock.update.mockResolvedValue({ affected });
+
+        await service.markMessagesAsRead(42, dto, 8);
+
+        expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
+      },
+    );
+
+    it('should notify only once when the same read boundary is submitted twice', async () => {
+      transactionMessageRepositoryMock.update
+        .mockResolvedValueOnce({ affected: 2 })
+        .mockResolvedValueOnce({ affected: 0 });
+
+      await service.markMessagesAsRead(42, dto, 8);
+      await service.markMessagesAsRead(42, dto, 8);
+
+      expect(messagesGatewayMock.notifyConversationChanged).toHaveBeenCalledExactlyOnceWith(
+        42,
+        8,
+        7,
+      );
     });
 
     it('should succeed when no unread received message matches the update conditions', async () => {
@@ -1010,15 +1086,29 @@ describe('ServiceRequestsService', () => {
       expect(transactionMessageRepositoryMock.update).toHaveBeenCalledOnce();
     });
 
+    it.each([true, false])(
+      'should not notify with zero updated rows, whether unread messages remain: %s',
+      async (hasUnreadMessages) => {
+        transactionMessageRepositoryMock.update.mockResolvedValue({ affected: 0 });
+        transactionMessageRepositoryMock.existsBy.mockResolvedValue(hasUnreadMessages);
+
+        await service.markMessagesAsRead(42, dto, 8);
+
+        expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
+      },
+    );
+
     it('should propagate a participation lookup failure without querying or updating messages', async () => {
       const error = new Error('Request lookup unavailable');
       requestRepositoryMock.findOneBy.mockRejectedValue(error);
 
       await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
 
       expect(transactionMessageRepositoryMock.findOneBy).not.toHaveBeenCalled();
       expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
       expect(messageRepositoryMock.manager.transaction).not.toHaveBeenCalled();
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
     });
 
     it('should propagate a boundary lookup failure without updating messages', async () => {
@@ -1026,6 +1116,7 @@ describe('ServiceRequestsService', () => {
       transactionMessageRepositoryMock.findOneBy.mockRejectedValue(error);
 
       await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
 
       expect(transactionMessageRepositoryMock.update).not.toHaveBeenCalled();
     });
@@ -1035,6 +1126,7 @@ describe('ServiceRequestsService', () => {
       transactionMessageRepositoryMock.update.mockRejectedValue(error);
 
       await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
     });
 
     it('should wait for participation to be checked before reading the boundary', async () => {
@@ -1087,6 +1179,7 @@ describe('ServiceRequestsService', () => {
       for (let step = 0; step < 4; step++) await Promise.resolve();
       expect(transactionMessageRepositoryMock.update).toHaveBeenCalledOnce();
       expect(settled).not.toHaveBeenCalled();
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
 
       finishUpdate({ affected: 1 });
       await expect(response).resolves.toBeUndefined();
@@ -1106,6 +1199,11 @@ describe('ServiceRequestsService', () => {
         readAt: IsNull(),
       });
       expect(reminderRepositoryMock.update).not.toHaveBeenCalled();
+      expect(messagesGatewayMock.notifyConversationChanged).toHaveBeenCalledExactlyOnceWith(
+        42,
+        8,
+        7,
+      );
     });
 
     it('should cancel a stale pending reminder even when this read update affects no messages', async () => {
@@ -1162,6 +1260,7 @@ describe('ServiceRequestsService', () => {
       transactionMessageRepositoryMock.existsBy.mockRejectedValue(error);
 
       await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
 
       expect(reminderRepositoryMock.update).not.toHaveBeenCalled();
     });
@@ -1171,6 +1270,7 @@ describe('ServiceRequestsService', () => {
       reminderRepositoryMock.update.mockRejectedValue(error);
 
       await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
     });
 
     it('should not resolve before reminder cancellation and transaction commit complete', async () => {
@@ -1182,23 +1282,31 @@ describe('ServiceRequestsService', () => {
         }),
       );
       messageRepositoryMock.manager.transaction.mockImplementation(async (work) => {
-        await work(transactionManagerMock);
+        const result = await work(transactionManagerMock);
         await new Promise<void>((resolve) => {
           finishCommit = resolve;
         });
+        return result;
       });
       const settled = vi.fn();
       const response = service.markMessagesAsRead(42, dto, 8);
       void response.then(settled);
       await vi.waitFor(() => expect(reminderRepositoryMock.update).toHaveBeenCalledOnce());
       expect(settled).not.toHaveBeenCalled();
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
 
       finishCancellation({ affected: 1 });
       await vi.waitFor(() => expect(finishCommit).toBeTypeOf('function'));
       expect(settled).not.toHaveBeenCalled();
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
       finishCommit();
       await response;
       expect(settled).toHaveBeenCalledOnce();
+      expect(messagesGatewayMock.notifyConversationChanged).toHaveBeenCalledExactlyOnceWith(
+        42,
+        8,
+        7,
+      );
     });
 
     it('should propagate a transaction commit failure', async () => {
@@ -1209,6 +1317,7 @@ describe('ServiceRequestsService', () => {
       });
 
       await expect(service.markMessagesAsRead(42, dto, 8)).rejects.toBe(error);
+      expect(messagesGatewayMock.notifyConversationChanged).not.toHaveBeenCalled();
     });
   });
 

@@ -20,6 +20,7 @@ import { MarkServiceRequestMessagesReadDto } from './dto/mark-service-request-me
 import { ServiceRequestUnreadMessageCountsDto } from './dto/service-request-unread-message-counts.dto.js';
 import { ServiceRequestMessageReminder } from './service-request-message-reminder.entity.js';
 import { ServiceRequestMessageReminderStatus } from './service-request-message-reminder-status.enum.js';
+import { ServiceRequestMessagesGateway } from './service-request-messages.gateway.js';
 
 @Injectable()
 export class ServiceRequestsService {
@@ -31,6 +32,7 @@ export class ServiceRequestsService {
     private readonly serviceProvidersService: ServiceProvidersService,
     @InjectRepository(ServiceRequestMessage)
     private readonly serviceRequestMessageRepository: Repository<ServiceRequestMessage>,
+    private readonly serviceRequestMessageGateway: ServiceRequestMessagesGateway,
   ) {}
 
   async create(
@@ -147,43 +149,53 @@ export class ServiceRequestsService {
   ): Promise<ServiceRequestMessageResponseDto> {
     const serviceRequest = await this.findRequestForParticipant(serviceRequestId, userId);
 
-    return this.serviceRequestMessageRepository.manager.transaction(async (manager) => {
-      const messageRepository = manager.getRepository(ServiceRequestMessage);
-      const messageToCreate = messageRepository.create({
-        content: createServiceRequestMessageDto.content,
-        serviceRequestId: serviceRequest.id,
-        authorUserId: userId,
-        readAt: null,
-      });
-      const savedMessage = await messageRepository.save(messageToCreate);
-      const recipientUserId =
-        userId === serviceRequest.requesterUserId
-          ? serviceRequest.recipientUserId
-          : serviceRequest.requesterUserId;
-      const dueAt = new Date(savedMessage.createdAt.getTime() + 5 * 60 * 1000);
-
-      await manager
-        .getRepository(ServiceRequestMessageReminder)
-        .createQueryBuilder()
-        .insert()
-        .values({
+    const messageReponse = await this.serviceRequestMessageRepository.manager.transaction(
+      async (manager) => {
+        const messageRepository = manager.getRepository(ServiceRequestMessage);
+        const messageToCreate = messageRepository.create({
+          content: createServiceRequestMessageDto.content,
           serviceRequestId: serviceRequest.id,
-          recipientUserId,
-          status: ServiceRequestMessageReminderStatus.PENDING,
-          dueAt,
-          sentAt: null,
-        })
-        .orIgnore()
-        .updateEntity(false)
-        .execute();
+          authorUserId: userId,
+          readAt: null,
+        });
+        const savedMessage = await messageRepository.save(messageToCreate);
+        const recipientUserId =
+          userId === serviceRequest.requesterUserId
+            ? serviceRequest.recipientUserId
+            : serviceRequest.requesterUserId;
+        const dueAt = new Date(savedMessage.createdAt.getTime() + 5 * 60 * 1000);
 
-      const message = await messageRepository.findOneOrFail({
-        where: { id: savedMessage.id },
-        relations: { authorUser: true },
-      });
+        await manager
+          .getRepository(ServiceRequestMessageReminder)
+          .createQueryBuilder()
+          .insert()
+          .values({
+            serviceRequestId: serviceRequest.id,
+            recipientUserId,
+            status: ServiceRequestMessageReminderStatus.PENDING,
+            dueAt,
+            sentAt: null,
+          })
+          .orIgnore()
+          .updateEntity(false)
+          .execute();
 
-      return this.toMessageResponse(message);
-    });
+        const message = await messageRepository.findOneOrFail({
+          where: { id: savedMessage.id },
+          relations: { authorUser: true },
+        });
+
+        return this.toMessageResponse(message);
+      },
+    );
+
+    this.serviceRequestMessageGateway.notifyConversationChanged(
+      serviceRequest.id,
+      serviceRequest.requesterUserId,
+      serviceRequest.recipientUserId,
+    );
+
+    return messageReponse;
   }
 
   async findMessages(
@@ -207,46 +219,58 @@ export class ServiceRequestsService {
   ): Promise<void> {
     const serviceRequest = await this.findRequestForParticipant(serviceRequestId, userId);
 
-    await this.serviceRequestMessageRepository.manager.transaction(async (manager) => {
-      const messageRepository = manager.getRepository(ServiceRequestMessage);
-      const message = await messageRepository.findOneBy({
-        id: markServiceRequestMessagesReadDto.upToMessageId,
-        serviceRequestId: serviceRequest.id,
-      });
+    const hasReadChange = await this.serviceRequestMessageRepository.manager.transaction(
+      async (manager) => {
+        const messageRepository = manager.getRepository(ServiceRequestMessage);
+        const message = await messageRepository.findOneBy({
+          id: markServiceRequestMessagesReadDto.upToMessageId,
+          serviceRequestId: serviceRequest.id,
+        });
 
-      if (message === null) {
-        throw new NotFoundException('Message not found in this conversation');
-      }
+        if (message === null) {
+          throw new NotFoundException('Message not found in this conversation');
+        }
 
-      await messageRepository.update(
-        {
+        const updateResult = await messageRepository.update(
+          {
+            serviceRequestId: serviceRequest.id,
+            authorUserId: Not(userId),
+            readAt: IsNull(),
+            id: LessThanOrEqual(markServiceRequestMessagesReadDto.upToMessageId),
+          },
+          { readAt: new Date() },
+        );
+        const messagesWereUpdated = (updateResult.affected ?? 0) > 0;
+        const hasUnreadMessages = await messageRepository.existsBy({
           serviceRequestId: serviceRequest.id,
           authorUserId: Not(userId),
           readAt: IsNull(),
-          id: LessThanOrEqual(markServiceRequestMessagesReadDto.upToMessageId),
-        },
-        { readAt: new Date() },
+        });
+
+        if (hasUnreadMessages) {
+          return messagesWereUpdated;
+        }
+
+        await manager.getRepository(ServiceRequestMessageReminder).update(
+          {
+            serviceRequestId: serviceRequest.id,
+            recipientUserId: userId,
+            status: ServiceRequestMessageReminderStatus.PENDING,
+          },
+          { status: ServiceRequestMessageReminderStatus.CANCELLED },
+        );
+
+        return messagesWereUpdated;
+      },
+    );
+
+    if (hasReadChange) {
+      this.serviceRequestMessageGateway.notifyConversationChanged(
+        serviceRequestId,
+        serviceRequest.requesterUserId,
+        serviceRequest.recipientUserId,
       );
-
-      const hasUnreadMessages = await messageRepository.existsBy({
-        serviceRequestId: serviceRequest.id,
-        authorUserId: Not(userId),
-        readAt: IsNull(),
-      });
-
-      if (hasUnreadMessages) {
-        return;
-      }
-
-      await manager.getRepository(ServiceRequestMessageReminder).update(
-        {
-          serviceRequestId: serviceRequest.id,
-          recipientUserId: userId,
-          status: ServiceRequestMessageReminderStatus.PENDING,
-        },
-        { status: ServiceRequestMessageReminderStatus.CANCELLED },
-      );
-    });
+    }
   }
 
   async getUnreadMessageCounts(userId: number): Promise<ServiceRequestUnreadMessageCountsDto> {

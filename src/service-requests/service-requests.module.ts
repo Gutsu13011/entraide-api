@@ -11,12 +11,14 @@ import { ServiceRequestMessageReminder } from './service-request-message-reminde
 import { ServiceRequestMessageRemindersService } from './service-request-message-reminders.service.js';
 import { MailModule } from '../mail/mail.module.js';
 import { ServiceRequestMessageRemindersJob } from './service-request-message-reminders.job.js';
+import { ServiceRequestMessagesGateway } from './service-request-messages.gateway.js';
 
 @Module({
   providers: [
     ServiceRequestsService,
     ServiceRequestMessageRemindersService,
     ServiceRequestMessageRemindersJob,
+    ServiceRequestMessagesGateway,
   ],
   controllers: [ServiceRequestsController],
   imports: [

@@ -457,8 +457,51 @@ The current implementation performs two SQL count queries and returns a single
 HTTP response. It does not load message bodies or persist separate counters.
 Swagger documents the response and its three non-negative numeric fields.
 The Angular frontend displays shared unread-message counters, polls them while
-visible and refreshes them after reading. In-app notifications, real-time push
-and delayed email delivery are separate features.
+visible and refreshes them after reading. The API also exposes the Socket.IO
+notifications described below; frontend integration is a separate step.
+
+### Real-time conversation notifications
+
+The Socket.IO namespace `/service-request-messages` shares the API HTTP port.
+Clients provide an access JWT in `auth.accessToken` when opening a connection.
+The gateway verifies the token and validates its positive integer `sub` and
+future integer `exp` claims before accepting the connection. Missing, malformed,
+invalid and expired tokens produce `connect_error` with `Unauthorized`.
+The namespace CORS origin is `http://localhost:4200`; authentication is enforced
+independently of CORS.
+
+Each accepted socket joins `user:<verified-user-id>`. Room membership is derived
+from the verified JWT, never from a client-supplied user id. Multiple tabs or
+devices for the same account share that room. A timer disconnects each socket
+when the original access token expires; early disconnection clears that timer.
+Refreshing an HTTP access token does not update an existing socket: the client
+must reconnect with the new token.
+
+After a reply message and its reminder have committed successfully,
+`ServiceRequestsService` emits `conversation.changed` to both recorded request
+participants, including the sender's other connections. The event payload is
+only `{ serviceRequestId: number }`; clients retrieve message content through
+the existing authenticated HTTP endpoints. Failed participant checks, validation,
+message writes and transaction commits do not emit a change notification.
+
+Read updates emit the same event after their transaction commits, but only
+when at least one received message actually changes from unread to read.
+Partial reads notify participants even when newer replies remain unread.
+Repeated reads, updates affecting zero rows and failed read transactions do not
+emit events. This prevents notification/reload/read feedback loops. Pending
+reminder cancellation still runs when applicable, even if no message changed.
+
+The Angular frontend does not yet subscribe to the namespace. Events are live
+notifications, not a persistent delivery queue: clients must refresh their HTTP
+data after reconnecting. Offline email reminders remain a separate mechanism.
+
+Tests cover JWT admission, private room targeting, expiration and timer cleanup,
+transaction ordering and rollback, plus real Socket.IO clients receiving an HTTP
+message notification in both participant accounts and multiple sender tabs while
+an unrelated account receives no event. Read notification tests cover partial
+and complete reads, changed unread counts and read receipts, repeated read
+suppression, authorization failures and commit ordering. `socket.io-client` is
+a development dependency for these integration tests.
 
 ### Unread-message reminder storage
 
