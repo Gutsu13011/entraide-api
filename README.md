@@ -29,6 +29,11 @@ service.
 ## Project status
 
 The application is under active development.
+
+Sent and received request lists share their relation loading, ordering and response
+conversion. Request and message participant responses use the same explicit
+`id`, `firstName`, `lastName` projection; loaded account emails and password hashes
+are not included.
 User registration, login and a protected profile endpoint are available.
 Provider ownership and authorization are implemented for profile updates,
 deletion, and service offering creation, updates and deletion. Service request
@@ -76,12 +81,21 @@ Local endpoints:
 - Swagger UI: http://localhost:3000/api
 - Health check: http://localhost:3000/health
 
+The API root is a base URL, not a health endpoint. The generated NestJS
+Hello World route has been removed; use `/health` to check the server and database.
+
 Service offering endpoints:
 
 - `GET /service-providers/:serviceProviderId/service-offerings` lists a provider's offerings.
+- `GET /service-providers/:serviceProviderId/service-offerings/:id` returns one offering for that provider.
 - `POST /service-providers/:serviceProviderId/service-offerings` creates an offering.
 - `PATCH /service-providers/:serviceProviderId/service-offerings/:id` partially updates an offering.
 - `DELETE /service-providers/:serviceProviderId/service-offerings/:id` deletes an offering.
+
+Single-offering consultation is public and returns an object, including its
+pricing type and nullable hourly rate. Both identifiers must be integers (`400`
+otherwise). A missing provider, missing offering, or offering belonging to a
+different provider returns `404`; the lookup always uses both identifiers.
 
 Offering creation, updates and deletion require ownership of the provider profile.
 Successful offering deletion returns `204 No Content`. It removes only the selected
@@ -106,6 +120,11 @@ The Angular frontend sends access tokens with authenticated API requests.
 - `GET /auth/me` returns the authenticated user's public profile.
 - `POST /auth/refresh` renews an access token from the refresh cookie.
 - `POST /auth/logout` revokes the current refresh session and clears its cookie.
+
+Registration returns `409 Conflict` for an existing email, including when a
+competing account is inserted after the initial lookup. The SQLite unique
+constraint on `users.email` is translated to the same response; unrelated
+persistence errors propagate and the existing account is preserved.
 
 Send `Authorization: Bearer <accessToken>` when calling protected endpoints.
 In Swagger UI, use the **Authorize** button with the token returned by login.
@@ -169,6 +188,10 @@ token with the session owner's `userId` as its subject. It returns only the new
 access token and does not create a session or extend its expiration. A validation
 or signing failure aborts renewal.
 
+JWT configuration is owned by `AuthModule`, which imports the configured
+`JwtModule` and re-exports it for importing modules. `AppModule` does not
+register a separate unconfigured `JwtService`.
+
 After validating credentials, login issues the existing 15-minute access token
 and creates a refresh session for the verified account. The controller returns
 only `accessToken` in JSON and sends the raw refresh secret in a `refresh_token`
@@ -183,7 +206,9 @@ session save issue no refresh cookie; a failed session save also fails login.
 `POST /auth/refresh` returns `{ accessToken }` with status 200 after validating
 `refresh_token` from the cookie. It requires an exact `Origin` of
 `http://localhost:4200` (Angular) or `http://localhost:3000` (local API/Swagger).
-These are the currently supported local origins. Missing, `null`, or different
+These local origins are defined in `src/origins.config.ts`; HTTP and Socket.IO
+CORS use `FRONTEND_ORIGIN`, while refresh and logout check both constants.
+Missing, `null`, or different
 origins return 403 before cookie validation. Missing or non-string cookie values,
 and unknown, expired or revoked sessions, return 401. Body fields and bearer
 access tokens are not used as refresh credentials. An expired access token does
@@ -219,7 +244,10 @@ restoration will follow.
 Each account can create at most one service provider profile. The API derives
 its owner from the verified access token and uses the account's first and last
 names when creating the profile. A client-supplied `ownerUserId` is rejected.
-A second profile creation for the same account returns `409 Conflict`.
+A second profile creation for the same account returns `409 Conflict`, including
+when a competing profile is inserted after the ownership lookup. The unique
+constraint on `service_providers.ownerUserId` is translated to that response
+without replacing the first profile; unrelated persistence errors propagate.
 
 Only the profile owner can update or delete it, or create, update and delete its service offerings.
 Attempts by another authenticated user return `403 Forbidden`.
@@ -526,6 +554,10 @@ An existing pending reminder keeps its original due date when more replies
 arrive. Both participants can have their own pending reminder, and reminders
 for different requests remain independent. Sent and cancelled records do not
 prevent scheduling a new pending reminder.
+
+The five-minute delay is defined once as `MESSAGE_REMINDER_DELAY_MS` in
+`src/service-requests/service-request-message-reminder.config.ts` and shared
+by reminder scheduling and preparation.
 
 `ServiceRequestMessageRemindersService.findDueReminders(now)` selects at most
 50 pending reminders whose due date is at or before the supplied time, ordered

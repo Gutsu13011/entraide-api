@@ -6,6 +6,7 @@ import { LoginDto } from './dto/login.dto.js';
 import { JwtService } from '@nestjs/jwt';
 import { CurrentUserDto } from './dto/current-user.dto.js';
 import { RefreshSessionsService } from './refresh-sessions.service.js';
+import { QueryFailedError } from 'typeorm';
 
 @Injectable()
 export class AuthService {
@@ -24,12 +25,24 @@ export class AuthService {
 
     const passwordHash = await argon2.hash(registerDto.password);
 
-    await this.usersService.create(
-      registerDto.firstName,
-      registerDto.lastName,
-      registerDto.email,
-      passwordHash,
-    );
+    try {
+      await this.usersService.create(
+        registerDto.firstName,
+        registerDto.lastName,
+        registerDto.email,
+        passwordHash,
+      );
+    } catch (error) {
+      if (
+        error instanceof QueryFailedError &&
+        error.driverError.code === 'SQLITE_CONSTRAINT_UNIQUE' &&
+        error.driverError.message === 'UNIQUE constraint failed: users.email'
+      ) {
+        throw new ConflictException('Email already registered');
+      }
+
+      throw error;
+    }
   }
 
   async validateCredentials(loginDto: LoginDto): Promise<{ id: number; email: string }> {

@@ -46,10 +46,6 @@ describe('ReviewsService', () => {
     service = module.get<ReviewsService>(ReviewsService);
   });
 
-  it('should be defined', () => {
-    expect(service).toBeDefined();
-  });
-
   describe('create', () => {
     const serviceProviderId = 13;
     const userId = 7;

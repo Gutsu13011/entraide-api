@@ -126,4 +126,18 @@ export class ServiceOfferingsController {
   ): Promise<void> {
     return this.serviceOfferingService.remove(serviceProviderId, id, request.user.id);
   }
+
+  @ApiOperation({ summary: 'Get a service offering for a service provider' })
+  @ApiOkResponse({ type: ServiceOffering })
+  @ApiBadRequestResponse({ description: 'The identifiers must be integers' })
+  @ApiNotFoundResponse({
+    description: 'Service provider not found or offering not found for this provider',
+  })
+  @Get(':id')
+  findOne(
+    @Param('serviceProviderId', ParseIntPipe) serviceProviderId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<ServiceOffering> {
+    return this.serviceOfferingService.findOneForServiceProvider(serviceProviderId, id);
+  }
 }

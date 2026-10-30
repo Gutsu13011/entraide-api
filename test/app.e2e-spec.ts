@@ -23,7 +23,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import cookieParser from 'cookie-parser';
 
-describe('AppController (e2e)', () => {
+describe('Entraide API (e2e)', () => {
   let app: INestApplication;
 
   async function getAccessToken(email: string = 'alicemartin@mail.com'): Promise<string> {
@@ -103,10 +103,6 @@ describe('AppController (e2e)', () => {
         imageUrl: '',
       },
     ]);
-  });
-
-  it('/ (GET)', () => {
-    return request(app.getHttpServer()).get('/').expect(200).expect('Hello World!');
   });
 
   it('/service-providers (GET)', () => {
@@ -379,6 +375,62 @@ describe('AppController (e2e)', () => {
       .expect((response) => {
         expect(response.body.total).toBe(3);
       });
+  });
+
+  it('/service-providers (POST) returns 409 and preserves a competing profile inserted after the ownership lookup', async () => {
+    const body = {
+      firstName: 'Julie',
+      lastName: 'Durand',
+      profession: 'Peintre',
+      city: 'Marseille',
+      description: 'Deuxième création de fiche',
+      hourlyRate: 35,
+      available: true,
+      imageUrl: '',
+    };
+    const accessToken = await getAccessToken();
+    const owner = await app
+      .get<Repository<User>>(getRepositoryToken(User))
+      .findOneByOrFail({ email: 'alicemartin@mail.com' });
+    const providers = app.get<Repository<ServiceProvider>>(getRepositoryToken(ServiceProvider));
+    const existingProfiles = await providers.find({ order: { id: 'ASC' } });
+    const realFindOneBy = providers.findOneBy.bind(providers);
+    let winningProfile: ServiceProvider | undefined;
+    const lookup = vi.spyOn(providers, 'findOneBy').mockImplementationOnce(async (criteria) => {
+      expect(criteria).toEqual({ ownerUserId: owner.id });
+      const existing = await realFindOneBy(criteria);
+      expect(existing).toBeNull();
+      winningProfile = await providers.save({
+        ...body,
+        firstName: owner.firstName,
+        lastName: owner.lastName,
+        ownerUserId: owner.id,
+        description: 'Première fiche conservée',
+      });
+      return existing;
+    });
+
+    try {
+      const response = await request(app.getHttpServer())
+        .post('/service-providers')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send(body)
+        .expect(409);
+
+      expect(response.body).toMatchObject({
+        statusCode: 409,
+        error: 'Conflict',
+        message: 'User already owns a service provider profile',
+      });
+      expect(lookup).toHaveBeenCalledExactlyOnceWith({ ownerUserId: owner.id });
+      expect(await providers.find({ order: { id: 'ASC' } })).toEqual([
+        ...existingProfiles,
+        winningProfile,
+      ]);
+      expect(await providers.countBy({ ownerUserId: owner.id })).toBe(1);
+    } finally {
+      lookup.mockRestore();
+    }
   });
 
   it('/service-providers (POST) should reject a client-supplied owner id', async () => {
@@ -1157,6 +1209,102 @@ describe('AppController (e2e)', () => {
       });
   });
 
+  describe('single offering consultation', () => {
+    const offerings = [
+      {
+        id: 17,
+        serviceProviderId: 1,
+        title: 'Réparation de fuite',
+        description: 'Recherche et réparation de fuite.',
+        pricingType: ServicePricingType.HOURLY,
+        hourlyRate: 45,
+      },
+      {
+        id: 18,
+        serviceProviderId: 1,
+        title: 'Conseil plomberie',
+        description: 'Conseils gratuits.',
+        pricingType: ServicePricingType.FREE,
+        hourlyRate: null,
+      },
+      {
+        id: 19,
+        serviceProviderId: 2,
+        title: 'Diagnostic électrique',
+        description: 'Diagnostic de votre installation.',
+        pricingType: ServicePricingType.HOURLY,
+        hourlyRate: 60,
+      },
+    ];
+
+    beforeEach(async () => {
+      await app
+        .get<Repository<ServiceOffering>>(getRepositoryToken(ServiceOffering))
+        .save(offerings);
+    });
+
+    it.each(offerings.slice(0, 2))(
+      'GET should return offering $id as a single public object with its pricing',
+      async (offering) => {
+        await request(app.getHttpServer())
+          .get(`/service-providers/${offering.serviceProviderId}/service-offerings/${offering.id}`)
+          .expect(200)
+          .expect(offering);
+      },
+    );
+
+    it.each([
+      { providerId: 1, offeringId: 999, message: 'Service offering not found' },
+      { providerId: 1, offeringId: 19, message: 'Service offering not found' },
+      { providerId: 999, offeringId: 17, message: 'Service provider with id 999 not found' },
+    ])(
+      'GET should return 404 for provider $providerId and offering $offeringId',
+      async ({ providerId, offeringId, message }) => {
+        await request(app.getHttpServer())
+          .get(`/service-providers/${providerId}/service-offerings/${offeringId}`)
+          .expect(404)
+          .expect({ statusCode: 404, error: 'Not Found', message });
+      },
+    );
+
+    it.each([
+      '/service-providers/not-a-number/service-offerings/17',
+      '/service-providers/1.5/service-offerings/17',
+      '/service-providers/1/service-offerings/not-a-number',
+      '/service-providers/1/service-offerings/17.5',
+    ])('GET %s should reject invalid identifiers with 400', async (url) => {
+      await request(app.getHttpServer()).get(url).expect(400).expect({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Validation failed (numeric string is expected)',
+      });
+    });
+
+    it('should document a public single-object response, both identifiers and the access errors', () => {
+      const document = SwaggerModule.createDocument(
+        app,
+        new DocumentBuilder().addBearerAuth().build(),
+      );
+      const operation =
+        document.paths['/service-providers/{serviceProviderId}/service-offerings/{id}'].get!;
+
+      expect(operation.responses['200']).toMatchObject({
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/ServiceOffering' } },
+        },
+      });
+      expect(operation.responses).toHaveProperty('400');
+      expect(operation.responses).toHaveProperty('404');
+      expect(operation.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'serviceProviderId', in: 'path', required: true }),
+          expect.objectContaining({ name: 'id', in: 'path', required: true }),
+        ]),
+      );
+      expect(operation.security ?? []).toEqual([]);
+    });
+  });
+
   it("/service-providers/:id/service-offerings (POST) should create an offering for the authenticated user's provider", async () => {
     const createServiceOfferingMock = {
       title: 'title',
@@ -1417,6 +1565,54 @@ describe('AppController (e2e)', () => {
     const savedUserCount = await userRepository.countBy({ email: 'firstname3@example.com' });
 
     expect(savedUserCount).toBe(1);
+  });
+
+  it('/auth/register (POST) returns 409 and preserves a competing account inserted after the email lookup', async () => {
+    const registration = {
+      firstName: 'Second',
+      lastName: 'Registration',
+      email: 'RACE@EXAMPLE.TEST',
+      password: 'second-registration-password',
+    };
+    const usersService = app.get(UsersService);
+    const usersRepository = app.get<Repository<User>>(getRepositoryToken(User));
+    const winningPasswordHash = await argon2.hash('first-registration-password');
+    const realFindByEmail = usersService.findByEmail.bind(usersService);
+    const lookup = vi.spyOn(usersService, 'findByEmail').mockImplementationOnce(async (email) => {
+      const existingUser = await realFindByEmail(email);
+      expect(existingUser).toBeNull();
+      await usersRepository.insert({
+        firstName: 'First',
+        lastName: 'Registration',
+        email: email.trim().toLowerCase(),
+        passwordHash: winningPasswordHash,
+      });
+      return existingUser;
+    });
+
+    try {
+      const response = await request(app.getHttpServer())
+        .post('/auth/register')
+        .send(registration)
+        .expect(409);
+
+      expect(response.body).toMatchObject({
+        statusCode: 409,
+        message: 'Email already registered',
+        error: 'Conflict',
+      });
+      expect(lookup).toHaveBeenCalledExactlyOnceWith(registration.email);
+      expect(await usersRepository.count()).toBe(1);
+      const winner = await usersService.findByEmailWithPassword('race@example.test');
+      expect(winner).toMatchObject({
+        firstName: 'First',
+        lastName: 'Registration',
+        email: 'race@example.test',
+        passwordHash: winningPasswordHash,
+      });
+    } finally {
+      lookup.mockRestore();
+    }
   });
 
   it('/auth/register (POST) create and get a new user', async () => {

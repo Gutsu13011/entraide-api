@@ -1,6 +1,4 @@
 import { Module } from '@nestjs/common';
-import { AppController } from './app.controller.js';
-import { AppService } from './app.service.js';
 import { ServiceProvidersModule } from './service-providers/service-providers.module.js';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -17,7 +15,6 @@ import { CreateServiceOfferingsTable1790070822998 } from './database/migrations/
 import { UsersModule } from './users/users.module.js';
 import { CreateUsersTable1790601439138 } from './database/migrations/1790601439138-CreateUsersTable.js';
 import { AuthModule } from './auth/auth.module.js';
-import { JwtService } from '@nestjs/jwt';
 import { AddServiceProviderOwner1791272307897 } from './database/migrations/1791272307897-AddServiceProviderOwner.js';
 import { ServiceRequestsModule } from './service-requests/service-requests.module.js';
 import { CreateServiceRequestsTable1791550235362 } from './database/migrations/1791550235362-CreateServiceRequestsTable.js';
@@ -63,8 +60,8 @@ const testMigrations = [
     }),
     ScheduleModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (conifgService: ConfigService) => ({
-        cronJobs: conifgService.getOrThrow<string>('NODE_ENV') !== 'test',
+      useFactory: (configService: ConfigService) => ({
+        cronJobs: configService.getOrThrow<string>('NODE_ENV') !== 'test',
       }),
     }),
     TypeOrmModule.forRootAsync({
@@ -90,11 +87,6 @@ const testMigrations = [
     AuthModule,
     ServiceRequestsModule,
   ],
-  controllers: [AppController],
-  providers: [
-    AppService,
-    { provide: APP_INTERCEPTOR, useClass: RequestLoggingInterceptor },
-    JwtService,
-  ],
+  providers: [{ provide: APP_INTERCEPTOR, useClass: RequestLoggingInterceptor }],
 })
 export class AppModule {}

@@ -8,7 +8,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ServiceProvidersService } from './service-providers.service.js';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ServiceProvider } from './service-provider.entity.js';
-import { Like } from 'typeorm';
+import { Like, QueryFailedError } from 'typeorm';
 import { UsersService } from '../users/users.service.js';
 
 describe('ServiceProvidersService', () => {
@@ -42,10 +42,6 @@ describe('ServiceProvidersService', () => {
     }).compile();
 
     service = module.get<ServiceProvidersService>(ServiceProvidersService);
-  });
-
-  it('should be defined', () => {
-    expect(service).toBeDefined();
   });
 
   describe('findAll', () => {
@@ -243,6 +239,75 @@ describe('ServiceProvidersService', () => {
       });
       expect(repositoryMock.save).toHaveBeenCalledWith(expectedServiceProvider);
       expect(createdServiceProvider).toBe(expectedServiceProvider);
+    });
+
+    it('should return a conflict when another profile is saved after the ownership lookup', async () => {
+      const provider = { ...createServiceProviderDto, ownerUserId: userMock.id };
+      const driverError = Object.assign(
+        new Error('UNIQUE constraint failed: service_providers.ownerUserId'),
+        { code: 'SQLITE_CONSTRAINT_UNIQUE' },
+      );
+      usersServiceMock.findById.mockResolvedValue(userMock);
+      repositoryMock.findOneBy.mockResolvedValue(null);
+      repositoryMock.create.mockReturnValueOnce(provider);
+      repositoryMock.save.mockRejectedValueOnce(
+        new QueryFailedError('INSERT INTO service_providers ...', [], driverError),
+      );
+
+      await expect(service.create(createServiceProviderDto, userMock.id)).rejects.toMatchObject({
+        status: 409,
+        message: 'User already owns a service provider profile',
+      });
+
+      expect(repositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({
+        ownerUserId: userMock.id,
+      });
+      expect(repositoryMock.save).toHaveBeenCalledExactlyOnceWith(provider);
+    });
+
+    it.each([
+      {
+        label: 'another unique constraint',
+        code: 'SQLITE_CONSTRAINT_UNIQUE',
+        message: 'UNIQUE constraint failed: service_providers.id',
+      },
+      {
+        label: 'another error code even with the ownership constraint message',
+        code: 'SQLITE_CONSTRAINT_FOREIGNKEY',
+        message: 'UNIQUE constraint failed: service_providers.ownerUserId',
+      },
+      { label: 'a locked database', code: 'SQLITE_BUSY', message: 'database is locked' },
+    ])(
+      'should propagate $label without reporting an existing profile',
+      async ({ code, message }) => {
+        const provider = { ...createServiceProviderDto, ownerUserId: userMock.id };
+        const error = new QueryFailedError(
+          'INSERT INTO service_providers ...',
+          [],
+          Object.assign(new Error(message), { code }),
+        );
+        usersServiceMock.findById.mockResolvedValue(userMock);
+        repositoryMock.findOneBy.mockResolvedValue(null);
+        repositoryMock.create.mockReturnValueOnce(provider);
+        repositoryMock.save.mockRejectedValueOnce(error);
+
+        await expect(service.create(createServiceProviderDto, userMock.id)).rejects.toBe(error);
+
+        expect(repositoryMock.save).toHaveBeenCalledExactlyOnceWith(provider);
+      },
+    );
+
+    it('should propagate an unexpected save failure without retrying', async () => {
+      const provider = { ...createServiceProviderDto, ownerUserId: userMock.id };
+      const error = new Error('Database unavailable');
+      usersServiceMock.findById.mockResolvedValue(userMock);
+      repositoryMock.findOneBy.mockResolvedValue(null);
+      repositoryMock.create.mockReturnValueOnce(provider);
+      repositoryMock.save.mockRejectedValueOnce(error);
+
+      await expect(service.create(createServiceProviderDto, userMock.id)).rejects.toBe(error);
+
+      expect(repositoryMock.save).toHaveBeenCalledExactlyOnceWith(provider);
     });
 
     it('should reject provider creation when the authenticated user no longer exists', async () => {

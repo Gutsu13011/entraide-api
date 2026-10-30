@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { Repository, FindOptionsWhere } from 'typeorm';
-import { Like } from 'typeorm';
+import { Like, QueryFailedError } from 'typeorm';
 import { ServiceProvider } from './service-provider.entity.js';
 import type { CreateServiceProviderDto } from './dto/create-service-provider.dto.js';
 import type { UpdateServiceProviderDto } from './dto/update-service-provider.dto.js';
@@ -89,7 +89,19 @@ export class ServiceProvidersService {
       ownerUserId,
     });
 
-    return this.serviceProvidersRepository.save(serviceProvider);
+    try {
+      return await this.serviceProvidersRepository.save(serviceProvider);
+    } catch (error) {
+      if (
+        error instanceof QueryFailedError &&
+        error.driverError.code === 'SQLITE_CONSTRAINT_UNIQUE' &&
+        error.driverError.message === 'UNIQUE constraint failed: service_providers.ownerUserId'
+      ) {
+        throw new ConflictException('User already owns a service provider profile');
+      }
+
+      throw error;
+    }
   }
 
   async update(
