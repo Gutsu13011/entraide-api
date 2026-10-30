@@ -37,10 +37,6 @@ describe('AuthController', () => {
     controller = module.get<AuthController>(AuthController);
   });
 
-  it('should be defined', () => {
-    expect(controller).toBeDefined();
-  });
-
   describe('login', () => {
     it.each(['development', 'test', 'production'])(
       'should set the refresh cookie and return only the access token in %s',

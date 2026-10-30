@@ -29,6 +29,7 @@ import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { CurrentUserDto } from './dto/current-user.dto.js';
 import type { Request, Response } from 'express';
 import { ConfigService } from '@nestjs/config';
+import { API_ORIGIN, FRONTEND_ORIGIN } from '../origins.config.js';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -96,7 +97,7 @@ export class AuthController {
   refresh(@Req() request: Request): Promise<{ accessToken: string }> {
     const origin = request.get('origin');
 
-    if (origin !== 'http://localhost:4200' && origin !== 'http://localhost:3000') {
+    if (origin !== FRONTEND_ORIGIN && origin !== API_ORIGIN) {
       throw new ForbiddenException('Untrusted request origin');
     }
 
@@ -120,7 +121,7 @@ export class AuthController {
   ): Promise<void> {
     const origin = request.get('origin');
 
-    if (origin !== 'http://localhost:4200' && origin !== 'http://localhost:3000') {
+    if (origin !== FRONTEND_ORIGIN && origin !== API_ORIGIN) {
       throw new ForbiddenException('Untrusted request origin');
     }
 

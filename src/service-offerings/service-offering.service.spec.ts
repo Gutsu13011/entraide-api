@@ -42,10 +42,6 @@ describe('ServiceOfferingService', () => {
     service = module.get<ServiceOfferingService>(ServiceOfferingService);
   });
 
-  it('should be defined', () => {
-    expect(service).toBeDefined();
-  });
-
   it('should create and save an hourly service offering', async () => {
     const serviceProviderId = 1;
     const createServiceOfferingDto: CreateServiceOfferingDto = {
@@ -236,6 +232,65 @@ describe('ServiceOfferingService', () => {
 
     await expect(service.findAllForServiceProvider(serviceProviderId)).rejects.toBe(error);
     expect(repositoryMock.find).not.toHaveBeenCalled();
+  });
+
+  describe('findOneForServiceProvider', () => {
+    const offering = Object.assign(new ServiceOffering(), {
+      id: 12,
+      serviceProviderId: 1,
+      title: 'Conseil plomberie',
+      description: 'Conseils pour votre installation.',
+      pricingType: ServicePricingType.FREE,
+      hourlyRate: null,
+    });
+
+    beforeEach(() => {
+      serviceProvidersServiceMock.findOne.mockResolvedValue({ id: 1 });
+      repositoryMock.findOneBy.mockResolvedValue(offering);
+    });
+
+    it('should return only the requested offering scoped to its provider', async () => {
+      await expect(service.findOneForServiceProvider(1, 12)).resolves.toBe(offering);
+
+      expect(serviceProvidersServiceMock.findOne).toHaveBeenCalledExactlyOnceWith(1);
+      expect(repositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({
+        id: 12,
+        serviceProviderId: 1,
+      });
+      expect(repositoryMock.find).not.toHaveBeenCalled();
+      expect(serviceProvidersServiceMock.findOneOwnedByOrFail).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { label: 'a missing offering', serviceProviderId: 1, id: 999 },
+      { label: 'an offering requested under another provider', serviceProviderId: 2, id: 12 },
+    ])('should return 404 for $label', async ({ serviceProviderId, id }) => {
+      serviceProvidersServiceMock.findOne.mockResolvedValue({ id: serviceProviderId });
+      repositoryMock.findOneBy.mockResolvedValue(null);
+
+      await expect(service.findOneForServiceProvider(serviceProviderId, id)).rejects.toMatchObject({
+        status: 404,
+        message: 'Service offering not found',
+      });
+      expect(repositoryMock.findOneBy).toHaveBeenCalledExactlyOnceWith({ id, serviceProviderId });
+    });
+
+    it('should preserve a missing provider error without querying its offerings', async () => {
+      const error = new NotFoundException('Service provider with id 999 not found');
+      serviceProvidersServiceMock.findOne.mockRejectedValueOnce(error);
+
+      await expect(service.findOneForServiceProvider(999, 12)).rejects.toBe(error);
+
+      expect(repositoryMock.findOneBy).not.toHaveBeenCalled();
+      expect(repositoryMock.find).not.toHaveBeenCalled();
+    });
+
+    it('should propagate an offering lookup failure without treating it as a missing offering', async () => {
+      const error = new Error('Database unavailable');
+      repositoryMock.findOneBy.mockRejectedValueOnce(error);
+
+      await expect(service.findOneForServiceProvider(1, 12)).rejects.toBe(error);
+    });
   });
 
   describe('remove', () => {

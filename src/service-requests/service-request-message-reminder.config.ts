@@ -1,0 +1,1 @@
+export const MESSAGE_REMINDER_DELAY_MS = 5 * 60 * 1000;

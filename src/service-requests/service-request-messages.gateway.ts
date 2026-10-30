@@ -6,11 +6,12 @@ import {
   type OnGatewayInit,
 } from '@nestjs/websockets';
 import type { Namespace, Socket } from 'socket.io';
+import { FRONTEND_ORIGIN } from '../origins.config.js';
 
 @WebSocketGateway({
   namespace: '/service-request-messages',
   cors: {
-    origin: 'http://localhost:4200',
+    origin: FRONTEND_ORIGIN,
   },
 })
 export class ServiceRequestMessagesGateway

@@ -28,10 +28,6 @@ describe('ReviewsController', () => {
     controller = module.get<ReviewsController>(ReviewsController);
   });
 
-  it('should be defined', () => {
-    expect(controller).toBeDefined();
-  });
-
   describe('findAll', () => {
     it('should return reviews for a service provider', async () => {
       const serviceProviderId = 1;

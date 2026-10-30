@@ -39,10 +39,6 @@ describe('ServiceProvidersController', () => {
     service = module.get<ServiceProvidersService>(ServiceProvidersService);
   });
 
-  it('should be defined', () => {
-    expect(controller).toBeDefined();
-  });
-
   describe('findAll', () => {
     it('should return the result provided by the service', async () => {
       const queryServiceProvidersDto: QueryServiceProvidersDto = {

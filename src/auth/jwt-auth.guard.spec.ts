@@ -20,10 +20,6 @@ describe('JwtAuthGuard', () => {
     guard = module.get<JwtAuthGuard>(JwtAuthGuard);
   });
 
-  it('should be defined', () => {
-    expect(guard).toBeDefined();
-  });
-
   it('should reject a request without an authorization header', async () => {
     const context = {
       switchToHttp: () => ({

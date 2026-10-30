@@ -8,6 +8,7 @@ import { LoginDto } from './dto/login.dto.js';
 import { JwtService } from '@nestjs/jwt';
 import type { User } from '../users/user.entity.js';
 import { RefreshSessionsService } from './refresh-sessions.service.js';
+import { QueryFailedError } from 'typeorm';
 
 describe('AuthService', () => {
   const usersServiceMock = {
@@ -45,10 +46,6 @@ describe('AuthService', () => {
     service = module.get<AuthService>(AuthService);
   });
 
-  it('should be defined', () => {
-    expect(service).toBeDefined();
-  });
-
   describe('register', () => {
     const registerDto: RegisterDto = {
       firstName: 'Alice',
@@ -78,6 +75,45 @@ describe('AuthService', () => {
       usersServiceMock.create.mockRejectedValue(databaseError);
 
       await expect(service.register(registerDto)).rejects.toBe(databaseError);
+    });
+
+    it('should return a conflict when the email is taken between lookup and creation', async () => {
+      const driverError = Object.assign(new Error('UNIQUE constraint failed: users.email'), {
+        code: 'SQLITE_CONSTRAINT_UNIQUE',
+      });
+      usersServiceMock.create.mockRejectedValue(
+        new QueryFailedError('INSERT INTO users ...', [], driverError),
+      );
+
+      await expect(service.register(registerDto)).rejects.toMatchObject({
+        status: 409,
+        message: 'Email already registered',
+      });
+
+      expect(usersServiceMock.findByEmail).toHaveBeenCalledExactlyOnceWith(registerDto.email);
+      expect(usersServiceMock.create).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      {
+        label: 'another unique constraint',
+        code: 'SQLITE_CONSTRAINT_UNIQUE',
+        message: 'UNIQUE constraint failed: users.id',
+      },
+      {
+        label: 'a different error code even with the email constraint message',
+        code: 'SQLITE_CONSTRAINT_NOTNULL',
+        message: 'UNIQUE constraint failed: users.email',
+      },
+      { label: 'a locked database', code: 'SQLITE_BUSY', message: 'database is locked' },
+    ])('should propagate $label without reporting a duplicate email', async ({ code, message }) => {
+      const driverError = Object.assign(new Error(message), { code });
+      const error = new QueryFailedError('INSERT INTO users ...', [], driverError);
+      usersServiceMock.create.mockRejectedValue(error);
+
+      await expect(service.register(registerDto)).rejects.toBe(error);
+
+      expect(usersServiceMock.create).toHaveBeenCalledOnce();
     });
 
     it('should reject registration when email is already registered', async () => {

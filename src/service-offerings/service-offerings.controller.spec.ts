@@ -12,6 +12,7 @@ describe('ServiceOfferingsController', () => {
   let controller: ServiceOfferingsController;
   const serviceOfferingServiceMock = {
     findAllForServiceProvider: vi.fn(),
+    findOneForServiceProvider: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
     remove: vi.fn(),
@@ -29,10 +30,6 @@ describe('ServiceOfferingsController', () => {
       .compile();
 
     controller = module.get<ServiceOfferingsController>(ServiceOfferingsController);
-  });
-
-  it('should be defined', () => {
-    expect(controller).toBeDefined();
   });
 
   describe('findAll', () => {
@@ -59,6 +56,27 @@ describe('ServiceOfferingsController', () => {
         serviceProviderId,
       );
       expect(result).toBe(expectedServiceOfferings);
+    });
+  });
+
+  describe('findOne', () => {
+    it('should pass both route identifiers and return the single offering', async () => {
+      const offering = Object.assign(new ServiceOffering(), {
+        id: 12,
+        serviceProviderId: 7,
+        title: 'Conseil plomberie',
+        description: 'Conseils pour votre installation.',
+        pricingType: ServicePricingType.FREE,
+        hourlyRate: null,
+      });
+      serviceOfferingServiceMock.findOneForServiceProvider.mockResolvedValueOnce(offering);
+
+      await expect(controller.findOne(7, 12)).resolves.toBe(offering);
+
+      expect(serviceOfferingServiceMock.findOneForServiceProvider).toHaveBeenCalledExactlyOnceWith(
+        7,
+        12,
+      );
     });
   });
 

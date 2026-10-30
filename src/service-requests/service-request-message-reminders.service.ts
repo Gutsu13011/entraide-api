@@ -6,6 +6,7 @@ import { ServiceRequestMessageReminderStatus } from './service-request-message-r
 import { ServiceRequestMessage } from './service-request-message.entity.js';
 import type { ServiceRequestMessageReminderEmail } from './service-request-message-reminder-email.js';
 import { MailService } from '../mail/mail.service.js';
+import { MESSAGE_REMINDER_DELAY_MS } from './service-request-message-reminder.config.js';
 @Injectable()
 export class ServiceRequestMessageRemindersService {
   private readonly sendingReminderIds = new Set<number>();
@@ -63,7 +64,9 @@ export class ServiceRequestMessageRemindersService {
         return null;
       }
 
-      const eligibleAt = new Date(oldestUnreadMessage.createdAt.getTime() + 5 * 60 * 1000);
+      const eligibleAt = new Date(
+        oldestUnreadMessage.createdAt.getTime() + MESSAGE_REMINDER_DELAY_MS,
+      );
 
       if (eligibleAt.getTime() > now.getTime()) {
         await remindersRepository.update(

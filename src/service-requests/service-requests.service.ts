@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ServiceRequest } from './service-request.entity.js';
-import { IsNull, LessThanOrEqual, Not, Repository } from 'typeorm';
+import { IsNull, LessThanOrEqual, Not, Repository, type FindOptionsWhere } from 'typeorm';
 import { ServiceOffering } from '../service-offerings/service-offering.entity.js';
 import { ServiceProvidersService } from '../service-providers/service-providers.service.js';
 import { CreateServiceRequestDto } from './dto/create-service-request.dto.js';
@@ -21,6 +21,9 @@ import { ServiceRequestUnreadMessageCountsDto } from './dto/service-request-unre
 import { ServiceRequestMessageReminder } from './service-request-message-reminder.entity.js';
 import { ServiceRequestMessageReminderStatus } from './service-request-message-reminder-status.enum.js';
 import { ServiceRequestMessagesGateway } from './service-request-messages.gateway.js';
+import { MESSAGE_REMINDER_DELAY_MS } from './service-request-message-reminder.config.js';
+import type { User } from '../users/user.entity.js';
+import type { ServiceRequestParticipantDto } from './dto/service-request-participant.dto.js';
 
 @Injectable()
 export class ServiceRequestsService {
@@ -75,23 +78,11 @@ export class ServiceRequestsService {
   }
 
   async findSentByUser(userId: number): Promise<ServiceRequestResponseDto[]> {
-    const requests = await this.serviceRequestsRepository.find({
-      where: { requesterUserId: userId },
-      relations: { requesterUser: true, recipientUser: true, review: true },
-      order: { createdAt: 'DESC', id: 'DESC' },
-    });
-
-    return requests.map((serviceRequest) => this.toResponse(serviceRequest));
+    return this.findRequests({ requesterUserId: userId });
   }
 
   async findReceivedByUser(userId: number): Promise<ServiceRequestResponseDto[]> {
-    const requests = await this.serviceRequestsRepository.find({
-      where: { recipientUserId: userId },
-      relations: { requesterUser: true, recipientUser: true, review: true },
-      order: { createdAt: 'DESC', id: 'DESC' },
-    });
-
-    return requests.map((serviceRequest) => this.toResponse(serviceRequest));
+    return this.findRequests({ recipientUserId: userId });
   }
 
   async updateStatus(
@@ -149,7 +140,7 @@ export class ServiceRequestsService {
   ): Promise<ServiceRequestMessageResponseDto> {
     const serviceRequest = await this.findRequestForParticipant(serviceRequestId, userId);
 
-    const messageReponse = await this.serviceRequestMessageRepository.manager.transaction(
+    const messageResponse = await this.serviceRequestMessageRepository.manager.transaction(
       async (manager) => {
         const messageRepository = manager.getRepository(ServiceRequestMessage);
         const messageToCreate = messageRepository.create({
@@ -163,7 +154,7 @@ export class ServiceRequestsService {
           userId === serviceRequest.requesterUserId
             ? serviceRequest.recipientUserId
             : serviceRequest.requesterUserId;
-        const dueAt = new Date(savedMessage.createdAt.getTime() + 5 * 60 * 1000);
+        const dueAt = new Date(savedMessage.createdAt.getTime() + MESSAGE_REMINDER_DELAY_MS);
 
         await manager
           .getRepository(ServiceRequestMessageReminder)
@@ -195,7 +186,7 @@ export class ServiceRequestsService {
       serviceRequest.recipientUserId,
     );
 
-    return messageReponse;
+    return messageResponse;
   }
 
   async findMessages(
@@ -317,11 +308,7 @@ export class ServiceRequestsService {
       readAt: message.readAt,
       serviceRequestId: message.serviceRequestId,
       authorUserId: message.authorUserId,
-      author: {
-        id: message.authorUser.id,
-        firstName: message.authorUser.firstName,
-        lastName: message.authorUser.lastName,
-      },
+      author: this.toParticipantResponse(message.authorUser),
     };
   }
 
@@ -339,16 +326,32 @@ export class ServiceRequestsService {
       offeringTitleSnapshot: serviceRequest.offeringTitleSnapshot,
       offeringPricingTypeSnapshot: serviceRequest.offeringPricingTypeSnapshot,
       offeringHourlyRateSnapshot: serviceRequest.offeringHourlyRateSnapshot,
-      requester: {
-        id: serviceRequest.requesterUser.id,
-        firstName: serviceRequest.requesterUser.firstName,
-        lastName: serviceRequest.requesterUser.lastName,
-      },
-      recipient: {
-        id: serviceRequest.recipientUser.id,
-        firstName: serviceRequest.recipientUser.firstName,
-        lastName: serviceRequest.recipientUser.lastName,
-      },
+      requester: this.toParticipantResponse(serviceRequest.requesterUser),
+      recipient: this.toParticipantResponse(serviceRequest.recipientUser),
     };
+  }
+
+  private toParticipantResponse(user: User): ServiceRequestParticipantDto {
+    return {
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+    };
+  }
+
+  private async findRequests(
+    where: FindOptionsWhere<ServiceRequest>,
+  ): Promise<ServiceRequestResponseDto[]> {
+    const requests = await this.serviceRequestsRepository.find({
+      where,
+      relations: {
+        requesterUser: true,
+        recipientUser: true,
+        review: true,
+      },
+      order: { createdAt: 'DESC', id: 'DESC' },
+    });
+
+    return requests.map((serviceRequest) => this.toResponse(serviceRequest));
   }
 }

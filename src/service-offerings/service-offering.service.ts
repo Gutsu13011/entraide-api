@@ -102,4 +102,10 @@ export class ServiceOfferingService {
       order: { id: 'ASC' },
     });
   }
+
+  async findOneForServiceProvider(serviceProviderId: number, id: number): Promise<ServiceOffering> {
+    await this.serviceProvidersService.findOne(serviceProviderId);
+
+    return this.findOneOrFail(serviceProviderId, id);
+  }
 }
